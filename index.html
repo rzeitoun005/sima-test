@@ -434,8 +434,14 @@ function buildLiveSchedule(nowMs){
     if (!clock) return;
     const startMs = clockTimeToMsToday(clock, nowMs);
     const endMs = startMs + parseDurationToMinutes(a.dur) * 60 * 1000;
-    const travelMin = a.travelMin ? parseInt(a.travelMin, 10) : 0;
-    const leaveByMs = (travelMin > 0) ? (startMs - travelMin*60*1000) : null;
+    // A Location alone is enough to get a Leave Now / Navigate stage — it
+    // must never silently depend on travelMin having been successfully
+    // filled in (e.g. if the real-time lookup was still in flight, or an
+    // older saved activity predates that field). Default to 15 min rather
+    // than lose the feature entirely.
+    const parsedTravel = parseInt(a.travelMin, 10);
+    const travelMin = a.location ? (!isNaN(parsedTravel) && parsedTravel > 0 ? parsedTravel : 15) : 0;
+    const leaveByMs = (a.location && travelMin > 0) ? (startMs - travelMin*60*1000) : null;
     items.push({ activity: a, startMs, endMs, leaveByMs, timers: [] });
   });
   items.sort((x,y) => x.startMs - y.startMs);
