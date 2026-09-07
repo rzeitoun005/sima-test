@@ -398,52 +398,92 @@ function sendTestNotification(){
   toast('Test notification sent');
 }
 
-/// Tracks the live, real-clock state of "today" once Start Day is pressed.
-/// This is what the Now screen actually reads from — separate from the
-/// scripted display text used elsewhere in the demo.
-let liveDay = { startedAt: null, order: [], index: 0 };
+/// Parses a clock time like "2:05 PM", "14:05", or "2:05pm" into {hh, mm}.
+/// Returns null if the text isn't a real time — those activities are left
+/// out of the live real-time engine entirely (they still show in Plan/Preview).
+function parseClockTime(str){
+  if (!str) return null;
+  const m = str.trim().match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/i);
+  if (!m) return null;
+  let hh = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  const ap = m[3] ? m[3].toLowerCase() : null;
+  if (hh > 23 || mm > 59) return null;
+  if (ap === 'pm' && hh < 12) hh += 12;
+  if (ap === 'am' && hh === 12) hh = 0;
+  return { hh, mm };
+}
+function clockTimeToMsToday(clock, referenceMs){
+  const ref = new Date(referenceMs);
+  return new Date(ref.getFullYear(), ref.getMonth(), ref.getDate(), clock.hh, clock.mm, 0, 0).getTime();
+}
 
-function liveDayCurrentEndsAt(){
-  if (!liveDay.startedAt || liveDay.index >= liveDay.order.length) return null;
-  let ms = liveDay.startedAt;
-  for (let i = 0; i <= liveDay.index; i++) {
-    ms += parseDurationToMinutes(liveDay.order[i].dur) * 60 * 1000;
-  }
-  return ms;
+/// Tracks the live, real-clock state of "today" once Start Day is pressed.
+/// Built from each activity's actual Time field (parsed as a real clock
+/// time) plus its Duration — this is what the Now screen reads from.
+/// Activities without a real, parseable time are excluded from live
+/// tracking, since there's nothing real to anchor them to.
+let liveDay = { startedAt: null, schedule: [] };
+
+function buildLiveSchedule(nowMs){
+  const items = [];
+  activities.forEach(a => {
+    const clock = parseClockTime(a.time);
+    if (!clock) return;
+    const startMs = clockTimeToMsToday(clock, nowMs);
+    const endMs = startMs + parseDurationToMinutes(a.dur) * 60 * 1000;
+    items.push({ activity: a, startMs, endMs });
+  });
+  items.sort((x,y) => x.startMs - y.startMs);
+  return items;
+}
+function liveDayCurrentItem(nowMs){
+  return liveDay.schedule.find(it => it.startMs <= nowMs && nowMs < it.endMs) || null;
+}
+function liveDayNextItem(nowMs){
+  const upcoming = liveDay.schedule.filter(it => it.startMs > nowMs);
+  return upcoming.length ? upcoming[0] : null;
 }
 function liveDayMarkCurrentDone(){
-  if (liveDay.index < liveDay.order.length - 1) {
-    liveDay.index += 1;
-  } else {
-    liveDay.index = liveDay.order.length; // past the end = day's activities complete
-  }
+  const nowMs = Date.now();
+  const current = liveDayCurrentItem(nowMs);
+  if (current) current.endMs = nowMs; // ends it early; next render reveals what's next
   render();
 }
 
-/// Schedules a real notification at the end of each activity, based on the
-/// actual system clock — not the fictional times shown elsewhere in the demo.
-/// This is what makes "Start Day" genuinely testable in real time: set short
-/// durations (e.g. "2 min") on your activities. Important limitation: iOS
-/// commonly suspends this timer within seconds of the phone locking or the
-/// app leaving the foreground — this reliably fires only while the tab
-/// stays open and the screen stays on, without a real backend push server.
+/// Schedules real notifications against each activity's actual clock time:
+/// a "starting soon" nudge shortly before it begins, a "start now" alert
+/// right at the start time, and a "time's up" alert at the end. Important
+/// limitation: iOS commonly suspends this timer within seconds of the phone
+/// locking or the app leaving the foreground — this reliably fires only
+/// while the tab stays open and the screen stays on, without a real
+/// backend push server behind it.
 function scheduleRealNotifications(){
   clearScheduledNotifications();
-  liveDay = { startedAt: Date.now(), order: [...activities], index: 0 };
+  const nowMs = Date.now();
+  const schedule = buildLiveSchedule(nowMs);
+  liveDay = { startedAt: nowMs, schedule };
   if (notifStatus !== 'granted') return;
-  let cursorMs = Date.now();
-  liveDay.order.forEach((act, i) => {
-    const mins = parseDurationToMinutes(act.dur);
-    cursorMs += mins * 60 * 1000;
-    const delay = cursorMs - Date.now();
-    const next = liveDay.order[i+1];
-    const id = setTimeout(() => {
-      fireNotification(
-        `Time's up: ${act.name}`,
-        next ? `Up next: ${next.name}` : 'That was your last planned activity today.'
-      );
-    }, Math.max(delay, 0));
-    scheduledTimers.push(id);
+  schedule.forEach((item, i) => {
+    const prepDelay = item.startMs - nowMs - (2*60*1000);
+    if (prepDelay > 0) {
+      const id = setTimeout(() => fireNotification(`Starting soon: ${item.activity.name}`, `Starts at ${item.activity.time}`), prepDelay);
+      scheduledTimers.push(id);
+    }
+    const startDelay = item.startMs - nowMs;
+    if (startDelay > 0) {
+      const id = setTimeout(() => fireNotification(`Start now: ${item.activity.name}`, 'Time to begin.'), startDelay);
+      scheduledTimers.push(id);
+    }
+    const endDelay = item.endMs - nowMs;
+    if (endDelay > 0) {
+      const next = schedule[i+1];
+      const id = setTimeout(() => fireNotification(
+        `Time's up: ${item.activity.name}`,
+        next ? `Up next: ${next.activity.name}` : 'That was your last scheduled item today.'
+      ), endDelay);
+      scheduledTimers.push(id);
+    }
   });
 }
 
@@ -477,11 +517,11 @@ const TYPE_SOFT = { focus:'var(--focus-soft)', meeting:'var(--meeting-soft)', pr
 const PRI_COLOR = { signal:'var(--focus)', next:'var(--meeting)', later:'var(--ink-faint)' };
 
 let activities = [
-  {time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
-  {time:'11:30', name:'Gym', dur:'1h', priority:'next', type:'personal'},
-  {time:'14:00', name:'Client meeting', dur:'1h', priority:'signal', type:'meeting'},
-  {time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
-  {time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
+  {id:'s1', time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
+  {id:'s2', time:'11:30', name:'Gym', dur:'1h', priority:'next', type:'personal'},
+  {id:'s3', time:'14:00', name:'Client meeting', dur:'1h', priority:'signal', type:'meeting'},
+  {id:'s4', time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
+  {id:'s5', time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
 ];
 let newActPriority = 'signal';
 let lastNavScreen = 'now1';
@@ -506,17 +546,17 @@ function go(screen){
 function restart(){
   clearScheduledNotifications();
   activities = [
-    {time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
-    {time:'11:30', name:'Gym', dur:'1h', priority:'next', type:'personal'},
-    {time:'14:00', name:'Client meeting', dur:'1h', priority:'signal', type:'meeting'},
-    {time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
-    {time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
+    {id:'s1', time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
+    {id:'s2', time:'11:30', name:'Gym', dur:'1h', priority:'next', type:'personal'},
+    {id:'s3', time:'14:00', name:'Client meeting', dur:'1h', priority:'signal', type:'meeting'},
+    {id:'s4', time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
+    {id:'s5', time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
   ];
   state = { screen:'plan', structure:null, riskChoice:null, conflictChoice:null, checks:{laptop:false,deck:false,contract:false} };
   lastNavScreen = 'now1';
   captureSwatchIndex = 0;
   voiceOpen = false;
-  liveDay = { startedAt: null, order: [], index: 0 };
+  liveDay = { startedAt: null, schedule: [] };
   saveToStorage();
   render();
 }
@@ -529,11 +569,23 @@ function saveActivity(){
   const time = document.getElementById('newActTime').value.trim() || '—';
   const dur = document.getElementById('newActDur').value.trim() || '30 min';
   if(!title){ toast('Give the activity a title first'); return; }
-  activities.push({ time, name:title, dur, priority:newActPriority, type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
+  const id = 'a' + Date.now() + Math.random().toString(36).slice(2,6);
+  activities.push({ id, time, name:title, dur, priority:newActPriority, type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
   newActPriority = 'signal';
   saveToStorage();
   toast('Added to today');
   go('plan');
+}
+function deleteActivity(id){
+  activities = activities.filter(a => a.id !== id);
+  saveToStorage();
+  render();
+}
+function clearAllActivities(){
+  activities = [];
+  saveToStorage();
+  toast('Cleared — add your real tasks now');
+  render();
 }
 
 /* ---------- icons ---------- */
@@ -544,6 +596,7 @@ const I = {
   sliders:`<svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 6h10M18 6h2M4 12h2M8 12h12M4 18h14M20 18h0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="6" r="2" fill="#fff" stroke="currentColor" stroke-width="2"/><circle cx="6" cy="12" r="2" fill="#fff" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="18" r="2" fill="#fff" stroke="currentColor" stroke-width="2"/></svg>`,
   more:`<svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>`,
   grip:`<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>`,
+  close:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
   warn:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3l10 18H2L12 3z" stroke="#E8503A" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4" stroke="#E8503A" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1" fill="#E8503A"/></svg>`,
   chev:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   check:`<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -687,6 +740,7 @@ function screenPlan(){
   return `
     <div class="title-lg">Today</div>
     <div class="subtitle">What needs to happen today?</div>
+    ${activities.length > 0 ? `<div class="textbtn" style="text-align:right;margin-bottom:4px;font-size:12px;" onclick="clearAllActivities()">Clear all</div>` : ''}
     ${groups.map(g=>{
       const items = activities.filter(a=>a.priority===g.key);
       return `<div class="section-label">${g.label} <span class="count">· ${g.hint}</span></div>
@@ -694,7 +748,7 @@ function screenPlan(){
           <div class="item-row">
             <div class="p-dot" style="background:${PRI_COLOR[a.priority]}"></div>
             <div class="item-main"><div class="item-name">${a.name}</div><div class="item-meta">${a.time} · ${a.dur}</div></div>
-            <div class="grip">${I.grip}</div>
+            <div class="icon-btn" style="padding:2px 4px;" onclick="deleteActivity('${a.id}')">${I.close}</div>
           </div>`).join('') || '<div class="subtitle" style="margin:2px 0 10px;">Nothing here yet.</div>'}`;
     }).join('')}
     <div class="add-row" onclick="go('addActivity')">+ Add activity</div>
@@ -717,7 +771,8 @@ function screenAddActivity(){
         <div class="p-chip ${newActPriority==='later'?'sel-later':''}" onclick="selectNewPriority('later')">Later</div>
       </div>
     </div>
-    <div class="field"><label>Time (optional)</label><input id="newActTime" type="text" placeholder="e.g. 10:00 AM"></div>
+    <div class="field"><label>Time — a real clock time, e.g. 2:05 PM or 14:05</label><input id="newActTime" type="text" placeholder="e.g. 2:05 PM"></div>
+    <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">This has to be an actual time for Start Day's live countdown and real notifications to use it. Anything else (or left blank) just won't show up in the live test.</div>
     <div class="field"><label>Duration</label><input id="newActDur" type="text" placeholder="e.g. 45 min"></div>
     <div class="field"><label>Preparation notes (optional)</label><textarea rows="2" placeholder="Anything to bring or review"></textarea></div>
   `;
@@ -788,42 +843,51 @@ function formatMMSS(ms){
 }
 
 function screenNow1(){
-  // This screen is genuinely live: it reads liveDay (set when Start Day is
-  // pressed) rather than any scripted/demo text. A ticking interval elsewhere
+  // Genuinely live: reads liveDay.schedule (built from each activity's real
+  // Time field) rather than any scripted text. A ticking interval elsewhere
   // re-renders this screen once a second while it's on-screen.
-  if (!liveDay.startedAt || liveDay.order.length === 0) {
-    return `<div class="subtitle" style="margin-top:20px;">Nothing scheduled — go back and add an activity, then press Start Day.</div>`;
+  if (!liveDay.startedAt || liveDay.schedule.length === 0) {
+    return `<div class="subtitle" style="margin-top:20px;">Nothing with a real clock time on it. Go back, give an activity a real time like "2:05 PM", then press Start Day again.</div>`;
   }
-  if (liveDay.index >= liveDay.order.length) {
+  const nowMs = Date.now();
+  const current = liveDayCurrentItem(nowMs);
+  const next = liveDayNextItem(nowMs);
+
+  if (!current) {
+    if (next) {
+      const untilStart = next.startMs - nowMs;
+      return `
+        <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>UPCOMING</div>
+        <div class="now-card" style="margin-top:12px;">
+          <div class="now-name">${next.activity.name}</div>
+          <div class="now-sub">Starts at ${next.activity.time} · in ${formatMMSS(untilStart)}</div>
+        </div>
+      `;
+    }
     return `
       <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ALL DONE</div>
-      <div class="now-card" style="margin-top:12px;">
-        <div class="now-name">That's everything on today's list.</div>
-      </div>
+      <div class="now-card" style="margin-top:12px;"><div class="now-name">Nothing left with a real time today.</div></div>
       <button class="btn-primary" style="margin-top:14px;" onclick="go('complete')">Finish the day</button>
     `;
   }
-  const current = liveDay.order[liveDay.index];
-  const next = liveDay.order[liveDay.index + 1];
-  const endsAt = liveDayCurrentEndsAt();
-  const remainingMs = endsAt - Date.now();
-  const totalMs = parseDurationToMinutes(current.dur) * 60 * 1000;
+
+  const remainingMs = current.endMs - nowMs;
+  const totalMs = current.endMs - current.startMs;
   const pct = Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
-  const overdue = remainingMs <= 0;
 
   return `
     ${heroMap()}
-    <div class="status-pill ${overdue?'risk':'ontrack'}"><div class="pdot" style="background:${overdue?'var(--risk)':'var(--ontrack)'}"></div>${overdue?"TIME'S UP":'ON TRACK'}</div>
+    <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ON TRACK</div>
     <div class="now-card" style="margin-top:12px;">
       <div class="now-top">
-        <div><div class="now-name">${current.name}</div><div class="now-sub">${overdue ? "This was due — mark it done to move on" : 'Live countdown, real clock'}</div></div>
-        ${ring(pct, overdue?'var(--risk)':'var(--focus)', 68, overdue?'0:00':formatMMSS(remainingMs), overdue?'overdue':'left')}
+        <div><div class="now-name">${current.activity.name}</div><div class="now-sub">Live countdown, real clock</div></div>
+        ${ring(pct, 'var(--focus)', 68, formatMMSS(remainingMs), 'left')}
       </div>
     </div>
     ${next ? `
     <div class="up-next-card">
       <div class="up-next-label">UP NEXT</div>
-      <div class="up-next-row"><div class="up-next-name">${next.name}</div><div class="up-next-time">${next.dur}</div></div>
+      <div class="up-next-row"><div class="up-next-name">${next.activity.name}</div><div class="up-next-time">${next.activity.time}</div></div>
     </div>` : ''}
     <button class="btn-primary" style="margin-top:14px;" onclick="liveDayMarkCurrentDone()">Mark done, continue</button>
   `;
