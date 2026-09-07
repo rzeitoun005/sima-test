@@ -423,7 +423,7 @@ function clockTimeToMsToday(clock, referenceMs){
 /// time) plus its Duration — this is what the Now screen reads from.
 /// Activities without a real, parseable time are excluded from live
 /// tracking, since there's nothing real to anchor them to.
-let liveDay = { startedAt: null, schedule: [] };
+let liveDay = { startedAt: null, schedule: [], doneIds: new Set() };
 
 function buildLiveSchedule(nowMs){
   const items = [];
@@ -432,57 +432,87 @@ function buildLiveSchedule(nowMs){
     if (!clock) return;
     const startMs = clockTimeToMsToday(clock, nowMs);
     const endMs = startMs + parseDurationToMinutes(a.dur) * 60 * 1000;
-    items.push({ activity: a, startMs, endMs });
+    items.push({ activity: a, startMs, endMs, timers: [] });
   });
   items.sort((x,y) => x.startMs - y.startMs);
   return items;
 }
+
+/// "Current" is the earliest activity that has started and hasn't been
+/// marked done — deliberately independent of whether its window has
+/// technically ended. This is what lets the status genuinely go AT RISK
+/// and stay that way, instead of silently jumping to "next" the moment
+/// the clock passes the end time. The person decides when they're done,
+/// not the clock — same rule the rest of the app follows.
 function liveDayCurrentItem(nowMs){
-  return liveDay.schedule.find(it => it.startMs <= nowMs && nowMs < it.endMs) || null;
+  const started = liveDay.schedule.filter(it => it.startMs <= nowMs && !liveDay.doneIds.has(it.activity.id));
+  if (started.length === 0) return null;
+  started.sort((a,b) => a.startMs - b.startMs);
+  return started[0];
 }
 function liveDayNextItem(nowMs){
-  const upcoming = liveDay.schedule.filter(it => it.startMs > nowMs);
-  return upcoming.length ? upcoming[0] : null;
+  const upcoming = liveDay.schedule.filter(it => it.startMs > nowMs && !liveDay.doneIds.has(it.activity.id));
+  return upcoming.length ? upcoming.sort((a,b)=>a.startMs-b.startMs)[0] : null;
 }
 function liveDayMarkCurrentDone(){
   const nowMs = Date.now();
   const current = liveDayCurrentItem(nowMs);
-  if (current) current.endMs = nowMs; // ends it early; next render reveals what's next
+  if (current) {
+    liveDay.doneIds.add(current.activity.id);
+    current.timers.forEach(id => clearTimeout(id)); // cancel its now-stale "running late" alert
+    current.timers = [];
+  }
   render();
 }
 
-/// Schedules real notifications against each activity's actual clock time:
-/// a "starting soon" nudge shortly before it begins, a "start now" alert
-/// right at the start time, and a "time's up" alert at the end. Important
-/// limitation: iOS commonly suspends this timer within seconds of the phone
-/// locking or the app leaving the foreground — this reliably fires only
-/// while the tab stays open and the screen stays on, without a real
-/// backend push server behind it.
+/// How much lead time a "starting soon" heads-up gets, scaled to the size
+/// of the activity — like Maps giving an earlier warning for a highway
+/// exit than for the next turn. Short activities skip the heads-up
+/// entirely so two alerts don't land almost back-to-back.
+function prepLeadMinutesFor(durationMinutes){
+  if (durationMinutes < 6) return 0;
+  if (durationMinutes < 20) return 2;
+  if (durationMinutes < 60) return 5;
+  return 10;
+}
+
+/// Schedules real notifications against each activity's actual clock time.
+/// Deliberately just two per activity, not three: a size-scaled "starting
+/// soon" heads-up (skipped for short activities), and a "running behind"
+/// alert if its window ends and it still hasn't been marked done — that
+/// second one is the actual AT RISK signal, not a generic timer. There's
+/// no separate "start now" ping; the persistent status card is what covers
+/// that moment, the same way Maps doesn't beep at every turn — it just
+/// shows it. Important limitation: iOS commonly suspends this timer within
+/// seconds of the phone locking or the app leaving the foreground — this
+/// reliably fires only while the tab stays open and the screen stays on,
+/// without a real backend push server behind it.
 function scheduleRealNotifications(){
   clearScheduledNotifications();
   const nowMs = Date.now();
   const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: nowMs, schedule };
+  liveDay = { startedAt: nowMs, schedule, doneIds: new Set() };
   if (notifStatus !== 'granted') return;
   schedule.forEach((item, i) => {
-    const prepDelay = item.startMs - nowMs - (2*60*1000);
-    if (prepDelay > 0) {
-      const id = setTimeout(() => fireNotification(`Starting soon: ${item.activity.name}`, `Starts at ${item.activity.time}`), prepDelay);
-      scheduledTimers.push(id);
-    }
-    const startDelay = item.startMs - nowMs;
-    if (startDelay > 0) {
-      const id = setTimeout(() => fireNotification(`Start now: ${item.activity.name}`, 'Time to begin.'), startDelay);
-      scheduledTimers.push(id);
+    const durationMin = (item.endMs - item.startMs) / 60000;
+    const leadMin = prepLeadMinutesFor(durationMin);
+    if (leadMin > 0) {
+      const prepDelay = item.startMs - nowMs - (leadMin*60*1000);
+      if (prepDelay > 0) {
+        const id = setTimeout(() => fireNotification(`Starting soon: ${item.activity.name}`, `Starts in ${leadMin} min, at ${item.activity.time}`), prepDelay);
+        scheduledTimers.push(id);
+        item.timers.push(id);
+      }
     }
     const endDelay = item.endMs - nowMs;
     if (endDelay > 0) {
       const next = schedule[i+1];
       const id = setTimeout(() => fireNotification(
-        `Time's up: ${item.activity.name}`,
-        next ? `Up next: ${next.activity.name}` : 'That was your last scheduled item today.'
+        `Running behind: ${item.activity.name}`,
+        next ? `Still going? ${next.activity.name} is coming up.` : "This was your last item — mark it done when you wrap up."
       ), endDelay);
       scheduledTimers.push(id);
+      item.timers.push(id);
     }
   });
 }
@@ -556,7 +586,7 @@ function restart(){
   lastNavScreen = 'now1';
   captureSwatchIndex = 0;
   voiceOpen = false;
-  liveDay = { startedAt: null, schedule: [] };
+  liveDay = { startedAt: null, schedule: [], doneIds: new Set() };
   saveToStorage();
   render();
 }
@@ -871,17 +901,18 @@ function screenNow1(){
     `;
   }
 
-  const remainingMs = current.endMs - nowMs;
+  const overdue = nowMs > current.endMs;
   const totalMs = current.endMs - current.startMs;
-  const pct = Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
+  const remainingMs = overdue ? (nowMs - current.endMs) : (current.endMs - nowMs);
+  const pct = overdue ? 0 : Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
 
   return `
     ${heroMap()}
-    <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ON TRACK</div>
+    <div class="status-pill ${overdue?'risk':'ontrack'}"><div class="pdot" style="background:${overdue?'var(--risk)':'var(--ontrack)'}"></div>${overdue?'AT RISK':'ON TRACK'}</div>
     <div class="now-card" style="margin-top:12px;">
       <div class="now-top">
-        <div><div class="now-name">${current.activity.name}</div><div class="now-sub">Live countdown, real clock</div></div>
-        ${ring(pct, 'var(--focus)', 68, formatMMSS(remainingMs), 'left')}
+        <div><div class="now-name">${current.activity.name}</div><div class="now-sub">${overdue ? "Running behind — mark it done when you actually wrap up" : 'Live countdown, real clock'}</div></div>
+        ${ring(pct, overdue?'var(--risk)':'var(--focus)', 68, (overdue?'+':'')+formatMMSS(remainingMs), overdue?'over':'left')}
       </div>
     </div>
     ${next ? `
