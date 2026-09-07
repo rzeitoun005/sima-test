@@ -316,7 +316,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v11 · short-trip city traffic buffer';
+const APP_VERSION = 'v12 · shows the resolved address for verification';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -739,7 +739,7 @@ function parseGeocodeResponse(data){
   if (!data || !data[0]) return null;
   const lat = parseFloat(data[0].lat), lng = parseFloat(data[0].lon);
   if (isNaN(lat) || isNaN(lng)) return null;
-  return { lat, lng };
+  return { lat, lng, displayName: data[0].display_name || null };
 }
 async function getDrivingMinutes(from, to){
   const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=false`;
@@ -802,7 +802,7 @@ async function computeTravelOptions(locationQuery){
   try { car = await getDrivingMinutes(origin, dest); } catch(e) { car = null; }
   const walk = estimateWalkMinutes(haversineKm(origin, dest));
   if (car == null && walk == null) return null;
-  return { car, walk };
+  return { car, walk, resolvedAddress: dest.displayName };
 }
 
 let pendingNewActivity = null;
@@ -1081,7 +1081,16 @@ function screenChooseTravelMode(){
   const { fields, options } = pendingNewActivity;
   return `
     <div class="title-lg" style="margin-top:0;">How are you getting there?</div>
-    <div class="subtitle" style="margin-bottom:14px;">${fields.location}</div>
+    <div class="subtitle" style="margin-bottom:6px;">You typed: ${fields.location}</div>
+    ${options.resolvedAddress ? `
+    <div class="alert-card" style="background:var(--accent-soft);border-color:var(--accent);margin-bottom:14px;">
+      <div class="alert-top">
+        <div><div class="alert-title" style="color:var(--accent);">Found this place</div>
+        <div class="alert-sub" style="color:var(--ink-dim);">${options.resolvedAddress}</div>
+        <div class="alert-sub" style="color:var(--ink-dim);margin-top:4px;">Not the right place? The times below will be wrong — cancel and try a more specific street address instead of a business name.</div></div>
+      </div>
+    </div>` : `
+    <div class="insight-card" style="margin-bottom:14px;"><div class="insight-body">Couldn't confirm exactly what was found — treat the numbers below cautiously.</div></div>`}
     ${options.car != null ? `
     <div class="choice-card" onclick="finalizeTravelChoice('drive')">
       <div><div class="choice-title">Drive — ${options.car} min</div><div class="choice-sub">Real route, with a small buffer added for city traffic on short trips. No live traffic data, so treat it as approximate.</div></div>
