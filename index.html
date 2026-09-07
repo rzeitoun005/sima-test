@@ -316,7 +316,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v12 · shows the resolved address for verification';
+const APP_VERSION = 'v13 · improved short-trip and walking accuracy';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -755,7 +755,17 @@ async function getDrivingMinutes(from, to){
 /// register on a 30-minute one. This adds a flat few-minute buffer only
 /// to short estimates, rather than a blanket multiplier that would just
 /// as easily distort longer highway routes in the other direction.
+/// OSRM has no traffic data — it computes the fastest theoretical route
+/// from road speed limits alone, no lights, no stop-and-go, no congestion.
+/// That gap is worst on very short city trips, where fixed overhead
+/// (lights, one-way detours, pedestrian zones) dominates the trip rather
+/// than distance. Graduated rather than one flat number, since the
+/// shortest trips need proportionally more correction than a 8-9 minute
+/// one does. Still an approximation, not real traffic data — for anything
+/// this short and this uncertain, typing the number in yourself after
+/// checking a real map is genuinely more reliable than any of this.
 function applyCityTrafficBuffer(rawMinutes){
+  if (rawMinutes <= 2) return rawMinutes + 6;
   if (rawMinutes < 10) return rawMinutes + 3;
   return rawMinutes;
 }
@@ -787,9 +797,15 @@ function haversineKm(a, b){
 /// walking is a straight-line distance / average speed estimate, and is
 /// labeled as such everywhere it's shown. It'll run short on routes with
 /// detours, water crossings, highways with no footpath, etc.
+/// Straight-line distance always undercounts real walking distance, since
+/// you follow streets and sidewalks, not a straight path through
+/// buildings. This "circuity factor" is a well-known correction in urban
+/// planning — dense, irregular old-city street grids (like central Paris)
+/// sit toward the higher end of the typical 1.2–1.4x range.
 function estimateWalkMinutes(km){
+  const circuityFactor = 1.4;
   const walkingKmPerHour = 4.8;
-  return Math.max(1, Math.round((km / walkingKmPerHour) * 60));
+  return Math.max(1, Math.round((km * circuityFactor / walkingKmPerHour) * 60));
 }
 
 /// Computes both a real driving time and an estimated walking time so the
