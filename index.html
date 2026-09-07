@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SIMA</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SIMA">
+<link rel="manifest" href="manifest.json">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+  :root{
+    --page:#F3F4F9;
+    --bg:#FFFFFF;
+    --bg-sub:#F6F7FB;
+    --border:#EAEBF2;
+    --ink:#13151C;
+    --ink-dim:#6B7080;
+    --ink-faint:#A4A8B4;
+    --accent:#4954F0;
+    --accent-soft:#EDEFFE;
+    --navy-a:#0B1230;
+    --navy-b:#1A2559;
+    --ontrack:#1FAE5C;
+    --ontrack-soft:#E7F8ED;
+    --risk:#E8503A;
+    --risk-soft:#FDECE8;
+    --tight:#E39A2A;
+    --tight-soft:#FCF1DD;
+    --focus:#4954F0;
+    --focus-soft:#EDEFFE;
+    --meeting:#8B5CF6;
+    --meeting-soft:#F3EEFE;
+    --prepare:#E39A2A;
+    --prepare-soft:#FCF1DD;
+    --personal:#149C88;
+    --personal-soft:#E4F6F2;
+  }
+  *{box-sizing:border-box;}
+  html,body{ margin:0; padding:0; background:var(--page); color:var(--ink); font-family:'Inter',sans-serif; -webkit-font-smoothing:antialiased; }
+  .page{ min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:48px 20px 64px; }
+  .masthead{ text-align:center; max-width:480px; margin-bottom:30px; }
+  .masthead .kicker{ font-size:12px; letter-spacing:0.14em; color:var(--accent); font-weight:700; margin-bottom:10px; }
+  .masthead h1{ font-size:26px; font-weight:800; margin:0 0 10px; letter-spacing:-0.01em; color:var(--ink); }
+  .masthead p{ font-size:14.5px; line-height:1.55; color:var(--ink-dim); margin:0; }
+
+  .progress-rail{ display:flex; align-items:center; gap:6px; margin-bottom:22px; }
+  .progress-rail .seg{ width:20px; height:3px; border-radius:2px; background:#DBDEE8; transition:background .25s ease; }
+  .progress-rail .seg.done{ background:var(--ink-faint); }
+  .progress-rail .seg.active{ background:var(--accent); }
+  .phase-label{ font-size:11px; letter-spacing:0.12em; color:var(--ink-faint); font-weight:700; margin-bottom:14px; }
+
+  .phone{
+    width:340px; height:730px; background:var(--bg);
+    border-radius:46px; border:1px solid #1B1E27;
+    box-shadow: 0 0 0 8px #101218, 0 30px 80px -20px rgba(20,25,45,0.35);
+    position:relative; overflow:hidden; display:flex; flex-direction:column;
+  }
+  .notch{ position:absolute; top:0; left:50%; transform:translateX(-50%); width:120px; height:26px; background:#101218; border-radius:0 0 16px 16px; z-index:6; }
+  .statusbar{ height:34px; display:flex; align-items:center; justify-content:space-between; padding:0 24px 0 26px; font-size:13px; font-weight:600; flex-shrink:0; padding-top:8px;}
+  .statusbar .icons{ display:flex; align-items:center; gap:5px; }
+
+  .appbar{ height:46px; display:flex; align-items:center; justify-content:space-between; padding:0 18px; flex-shrink:0; }
+  .appbar .side{ width:26px; display:flex; align-items:center; }
+  .appbar .side.right{ justify-content:flex-end; }
+  .appbar .title{ font-size:15px; font-weight:700; color:var(--ink); }
+  .appbar .brand{ font-size:17px; font-weight:800; color:var(--ink); }
+  .icon-btn{ cursor:pointer; color:var(--ink-dim); display:flex; }
+  .icon-btn:hover{ color:var(--ink); }
+
+  .content{ flex:1; overflow-y:auto; padding:8px 18px 18px; }
+  .content::-webkit-scrollbar{ display:none; }
+
+  .tabbar{ height:64px; border-top:1px solid var(--border); display:flex; align-items:center; justify-content:space-around; flex-shrink:0; background:var(--bg); }
+  .tab{ display:flex; flex-direction:column; align-items:center; gap:3px; color:var(--ink-faint); cursor:pointer; font-size:10.5px; font-weight:600; }
+  .tab.active{ color:var(--accent); }
+
+  .section-label{ font-size:11px; font-weight:700; letter-spacing:0.06em; color:var(--ink-faint); margin:14px 0 8px; display:flex; align-items:center; gap:8px; }
+  .section-label .count{ color:var(--ink-dim); font-weight:500; letter-spacing:0; }
+  .section-label:first-child{ margin-top:2px; }
+
+  .title-lg{ font-size:20px; font-weight:800; margin:6px 0 4px; letter-spacing:-0.01em; }
+  .subtitle{ font-size:13px; color:var(--ink-dim); line-height:1.5; margin:0 0 6px; }
+
+  .btn-primary{ width:100%; padding:14px; border-radius:14px; border:none; background:var(--accent); color:#fff; font-weight:700; font-size:14.5px; cursor:pointer; transition:transform .12s ease, opacity .12s ease; }
+  .btn-primary:active{ transform:scale(0.985); }
+  .btn-primary:disabled{ opacity:0.35; cursor:not-allowed; }
+  .btn-outline{ width:100%; padding:13px; border-radius:14px; background:#fff; border:1.5px solid var(--border); color:var(--ink); font-weight:700; font-size:14px; cursor:pointer; }
+  .btn-outline.warn{ border-color:#F0D2A8; color:var(--tight); }
+  .btn-row{ display:flex; gap:10px; }
+  .btn-row .btn-outline, .btn-row .btn-primary{ flex:1; }
+  .btn-fixed{ padding:14px 18px 4px; flex-shrink:0; }
+
+  .item-row{ display:flex; align-items:center; gap:11px; padding:11px 12px; background:var(--bg-sub); border:1px solid var(--border); border-radius:14px; margin-bottom:8px; cursor:default; }
+  .p-dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .item-main{ flex:1; min-width:0; }
+  .item-name{ font-size:13.5px; font-weight:600; color:var(--ink); }
+  .item-meta{ font-size:11.5px; color:var(--ink-dim); margin-top:2px; }
+  .grip{ color:#C9CCD6; flex-shrink:0; }
+
+  .add-row{ display:flex; align-items:center; gap:10px; padding:12px; border:1.5px dashed var(--border); border-radius:14px; color:var(--ink-faint); font-size:13px; cursor:pointer; margin-top:2px; font-weight:600; }
+  .add-row:hover{ color:var(--accent); border-color:var(--accent-soft); background:var(--accent-soft); }
+
+  .field{ margin-bottom:16px; }
+  .field label{ display:block; font-size:11.5px; font-weight:700; color:var(--ink-faint); letter-spacing:0.03em; margin-bottom:6px; }
+  .field input, .field textarea{
+    width:100%; padding:12px 13px; border-radius:12px; border:1px solid var(--border); background:var(--bg-sub);
+    font-family:'Inter',sans-serif; font-size:14px; color:var(--ink); resize:none;
+  }
+  .field input:focus, .field textarea:focus{ outline:none; border-color:var(--accent); background:#fff; }
+  .chip-row{ display:flex; gap:8px; }
+  .p-chip{ flex:1; text-align:center; padding:10px 0; border-radius:11px; border:1.5px solid var(--border); font-size:13px; font-weight:700; cursor:pointer; color:var(--ink-dim); }
+  .p-chip.sel-signal{ border-color:var(--focus); background:var(--focus-soft); color:var(--focus); }
+  .p-chip.sel-next{ border-color:var(--meeting); background:var(--meeting-soft); color:var(--meeting); }
+  .p-chip.sel-later{ border-color:var(--ink-faint); background:var(--bg-sub); color:var(--ink-dim); }
+  .textbtn{ font-size:14px; font-weight:700; color:var(--ink-dim); cursor:pointer; }
+  .textbtn.accent{ color:var(--accent); }
+
+  .struct-row{ display:flex; align-items:center; gap:13px; padding:14px; border:1.5px solid var(--border); border-radius:15px; margin-bottom:9px; cursor:pointer; }
+  .struct-row.selected{ border-color:var(--accent); background:var(--accent-soft); }
+  .struct-icon{ width:38px; height:38px; border-radius:11px; background:var(--bg-sub); display:flex; align-items:center; justify-content:center; flex-shrink:0; color:var(--accent); }
+  .struct-main{ flex:1; }
+  .struct-name{ font-size:14px; font-weight:700; }
+  .struct-desc{ font-size:11.5px; color:var(--ink-dim); margin-top:2px; line-height:1.4; }
+  .radio{ width:19px; height:19px; border-radius:50%; border:2px solid var(--border); flex-shrink:0; display:flex; align-items:center; justify-content:center; }
+  .radio.on{ border-color:var(--accent); }
+  .radio.on::after{ content:''; width:9px; height:9px; border-radius:50%; background:var(--accent); }
+
+  .preview-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+  .t-row{ display:flex; gap:11px; margin-bottom:9px; align-items:flex-start; }
+  .t-time{ width:52px; flex-shrink:0; font-size:11px; font-weight:700; color:var(--ink-faint); padding-top:10px; }
+  .t-card{ flex:1; display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:13px; border:1px solid var(--border); background:var(--bg-sub); }
+  .t-swatch{ width:26px; height:26px; border-radius:8px; flex-shrink:0; }
+  .t-name{ font-size:13.5px; font-weight:700; }
+  .t-sub{ font-size:11px; color:var(--ink-dim); margin-top:1px; }
+
+  .hero-map{ height:86px; border-radius:16px; background:linear-gradient(135deg, var(--navy-a), var(--navy-b)); margin:8px 0 14px; position:relative; overflow:hidden; }
+  .hero-map svg{ width:100%; height:100%; }
+
+  .status-pill{ display:inline-flex; align-items:center; gap:6px; padding:5px 12px 5px 9px; border-radius:20px; font-size:11px; font-weight:800; letter-spacing:0.02em; }
+  .status-pill .pdot{ width:6px; height:6px; border-radius:50%; }
+  .status-pill.ontrack{ background:var(--ontrack-soft); color:var(--ontrack); }
+  .status-pill.tight{ background:var(--tight-soft); color:var(--tight); }
+  .status-pill.risk{ background:var(--risk-soft); color:var(--risk); }
+
+  .now-card{ border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:12px; background:#fff; }
+  .now-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .now-name{ font-size:19px; font-weight:800; letter-spacing:-0.01em; margin-bottom:4px; }
+  .now-sub{ font-size:12.5px; color:var(--ink-dim); }
+  .ring-wrap{ position:relative; width:76px; height:76px; flex-shrink:0; }
+  .ring-wrap .num{ position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .ring-wrap .num b{ font-size:18px; font-weight:800; line-height:1; }
+  .ring-wrap .num span{ font-size:8.5px; color:var(--ink-faint); font-weight:700; }
+
+  .up-next-card{ border:1px solid var(--border); border-radius:16px; padding:14px 16px; background:var(--bg-sub); }
+  .up-next-label{ font-size:10.5px; font-weight:800; letter-spacing:0.07em; color:var(--ink-faint); margin-bottom:8px; }
+  .up-next-row{ display:flex; align-items:center; justify-content:space-between; }
+  .up-next-name{ font-size:14px; font-weight:700; }
+  .up-next-time{ font-size:12.5px; color:var(--ink-dim); }
+
+  .alert-card{ border-radius:16px; padding:16px; margin-bottom:14px; background:var(--risk-soft); border:1px solid #F6CFC5; }
+  .alert-top{ display:flex; gap:10px; align-items:flex-start; }
+  .alert-title{ font-size:15px; font-weight:800; color:var(--risk); margin-bottom:4px; }
+  .alert-sub{ font-size:12.5px; color:#7A3A2F; line-height:1.5; }
+
+  .checklist{ border:1.5px solid var(--accent); border-radius:16px; padding:6px 14px; margin-bottom:14px; background:var(--accent-soft); }
+  .checklist .cl-label{ font-size:10.5px; font-weight:800; letter-spacing:0.07em; color:var(--accent); padding:10px 0 6px; }
+  .check-row{ display:flex; align-items:center; gap:11px; padding:9px 0; border-top:1px solid rgba(73,84,240,0.12); cursor:pointer; }
+  .check-row:first-of-type{ border-top:none; }
+  .check-box{ width:19px; height:19px; border-radius:6px; border:1.5px solid var(--ink-faint); display:flex; align-items:center; justify-content:center; flex-shrink:0; background:#fff; }
+  .check-box.on{ background:var(--accent); border-color:var(--accent); }
+  .check-label{ font-size:13.5px; font-weight:600; }
+  .check-label.on{ color:var(--ink-dim); text-decoration:line-through; }
+
+  .stat-strip{ display:flex; gap:8px; margin-bottom:14px; }
+  .stat-chip{ flex:1; text-align:center; padding:12px 6px; border-radius:13px; background:var(--bg-sub); border:1px solid var(--border); }
+  .stat-chip .num{ font-size:16px; font-weight:800; }
+  .stat-chip .lab{ font-size:9.5px; color:var(--ink-dim); margin-top:3px; font-weight:600; letter-spacing:0.02em;}
+
+  .route-card{ border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:14px; background:var(--bg-sub); }
+  .route-card svg{ width:100%; height:70px; display:block; }
+
+  .conflict-item{ display:flex; align-items:center; justify-content:space-between; padding:9px 0; border-top:1px solid #F6CFC5; }
+  .conflict-item:first-of-type{ border-top:none; }
+  .conflict-item .nm{ font-size:13px; font-weight:700; color:#7A3A2F; }
+  .conflict-item .tm{ font-size:12px; color:#7A3A2F; opacity:0.8; }
+
+  .choice-card{ border:1.5px solid var(--border); border-radius:15px; padding:13px 14px; margin-bottom:9px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff; }
+  .choice-card:hover{ border-color:var(--accent); }
+  .choice-title{ font-size:13.5px; font-weight:700; }
+  .choice-sub{ font-size:11.5px; color:var(--ink-dim); margin-top:2px; line-height:1.4; }
+
+  .complete-hero{ text-align:center; margin:10px 0 18px; }
+  .complete-hero .big{ font-size:26px; font-weight:800; }
+  .complete-hero .lab{ font-size:11px; color:var(--ink-dim); margin-top:4px; font-weight:700; letter-spacing:0.06em; }
+  .note-line{ font-size:12.5px; color:var(--ink-dim); text-align:center; margin-bottom:18px; line-height:1.55; padding:0 4px; }
+
+  .demo-bar{ margin-top:24px; display:flex; flex-direction:column; align-items:center; gap:9px; }
+  .demo-caption{ font-size:13px; color:var(--ink-dim); text-align:center; max-width:320px; line-height:1.5; }
+  .demo-btn{ font-size:12.5px; font-weight:700; color:#fff; background:#20232D; border:none; border-radius:20px; padding:9px 20px; cursor:pointer; }
+  .demo-btn:hover{ background:#000; }
+  .demo-tag{ font-size:10px; letter-spacing:0.1em; color:var(--ink-faint); font-weight:700; }
+  .restart-link{ margin-top:20px; font-size:12px; color:var(--ink-faint); cursor:pointer; }
+  .restart-link:hover{ color:var(--ink-dim); }
+
+  .scope-note{ margin-top:40px; max-width:480px; padding:20px 22px; background:#fff; border:1px solid var(--border); border-radius:16px; }
+  .scope-note h3{ font-size:14px; margin:0 0 10px; font-weight:800; }
+  .scope-note p{ font-size:12.5px; color:var(--ink-dim); line-height:1.6; margin:0; }
+  .scope-note b{ color:var(--ink); }
+
+  /* ---- Insights: Vision, Trajectory, Performance ---- */
+  .vision-row{ margin-bottom:14px; }
+  .vision-row-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+  .vision-row-top .lbl{ font-size:12.5px; font-weight:700; }
+  .vision-row-top .val{ font-size:12px; font-weight:700; color:var(--ink-dim); }
+  input[type="range"]{ -webkit-appearance:none; width:100%; height:6px; border-radius:4px; background:var(--border); outline:none; }
+  input[type="range"]::-webkit-slider-thumb{ -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:var(--accent); border:3px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.25); cursor:pointer; }
+  .radar-card{ display:flex; flex-direction:column; align-items:center; padding:14px 8px 6px; border:1px solid var(--border); border-radius:16px; background:#fff; margin-bottom:14px; }
+  .radar-legend{ display:flex; gap:16px; margin-top:6px; }
+  .radar-legend span{ display:flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:var(--ink-dim); }
+  .radar-legend i{ width:9px; height:9px; border-radius:2px; display:inline-block; }
+  .insight-card{ border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:12px; background:#fff; }
+  .insight-label{ font-size:10.5px; font-weight:800; letter-spacing:0.07em; color:var(--ink-faint); margin-bottom:8px; }
+  .insight-body{ font-size:12.5px; color:var(--ink-dim); line-height:1.55; }
+  .insight-body b{ color:var(--ink); }
+  .perf-row{ display:flex; align-items:center; gap:14px; }
+  .perf-num{ font-size:30px; font-weight:800; }
+  .perf-trend{ font-size:11.5px; font-weight:700; color:var(--ontrack); margin-top:2px; }
+  .capital-num{ font-size:22px; font-weight:800; }
+
+  /* ---- Profile: Capture the Day, life feed, memory ---- */
+  .profile-header{ display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .profile-avatar{ width:46px; height:46px; border-radius:50%; background:linear-gradient(135deg,var(--accent),var(--meeting)); flex-shrink:0; }
+  .profile-name{ font-size:15px; font-weight:800; }
+  .profile-meta{ font-size:11.5px; color:var(--ink-dim); }
+  .memory-card{ border-radius:16px; padding:15px 16px; margin-bottom:14px; background:linear-gradient(135deg, var(--navy-a), var(--navy-b)); color:#fff; }
+  .memory-label{ font-size:10px; font-weight:800; letter-spacing:0.08em; color:#9AA6E8; margin-bottom:5px; }
+  .memory-text{ font-size:13.5px; font-weight:600; line-height:1.4; }
+  .capture-prompt{ display:flex; align-items:center; gap:12px; border:1.5px dashed var(--accent); border-radius:16px; padding:14px; margin-bottom:16px; background:var(--accent-soft); cursor:pointer; }
+  .capture-prompt .txt b{ display:block; font-size:13.5px; font-weight:800; color:var(--ink); }
+  .capture-prompt .txt span{ font-size:11.5px; color:var(--ink-dim); }
+  .feed-card{ display:flex; gap:11px; padding:11px; border:1px solid var(--border); border-radius:15px; margin-bottom:9px; background:#fff; }
+  .feed-photo{ width:52px; height:52px; border-radius:11px; flex-shrink:0; }
+  .feed-day{ font-size:10.5px; font-weight:800; color:var(--accent); letter-spacing:0.03em; }
+  .feed-caption{ font-size:13px; font-weight:700; margin:2px 0 3px; }
+  .feed-stats{ font-size:11px; color:var(--ink-dim); }
+  .swatch-row{ display:flex; gap:8px; margin-bottom:16px; }
+  .swatch{ width:44px; height:44px; border-radius:12px; cursor:pointer; border:2.5px solid transparent; flex-shrink:0; }
+  .swatch.selected{ border-color:var(--ink); }
+  .capture-photo-lg{ width:100%; height:150px; border-radius:16px; margin-bottom:14px; }
+  .notif-row{ display:flex; align-items:flex-start; gap:10px; padding:9px 0; border-top:1px solid var(--border); }
+  .notif-row:first-of-type{ border-top:none; }
+  .notif-row .txt{ font-size:12.5px; color:var(--ink); line-height:1.4; }
+  .notif-row .tag{ font-size:9.5px; font-weight:800; color:var(--ink-faint); letter-spacing:0.05em; }
+
+  /* ---- Voice ---- */
+  .voice-fab{
+    position:absolute; right:16px; bottom:82px; width:50px; height:50px; border-radius:50%;
+    background:var(--ink); color:#fff; display:flex; align-items:center; justify-content:center;
+    cursor:pointer; box-shadow:0 8px 20px rgba(0,0,0,0.25); z-index:20;
+  }
+  .voice-panel{
+    position:absolute; left:14px; right:14px; bottom:82px; background:#fff; border-radius:16px;
+    border:1px solid var(--border); box-shadow:0 14px 40px rgba(0,0,0,0.18); padding:8px; z-index:21;
+    display:none;
+  }
+  .voice-panel.open{ display:block; }
+  .voice-panel .hdr{ font-size:10.5px; font-weight:800; color:var(--ink-faint); letter-spacing:0.06em; padding:8px 10px 4px; }
+  .voice-cmd{ padding:10px; font-size:13.5px; font-weight:600; border-radius:10px; cursor:pointer; }
+  .voice-cmd:hover{ background:var(--bg-sub); }
+
+  /* ---- Contextual action chip ---- */
+  .action-chip{ display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:700; color:#fff; background:var(--accent); padding:6px 12px; border-radius:20px; cursor:pointer; margin-top:10px; }
+
+  @media (max-width:400px){ .phone{ transform:scale(0.88); margin:-42px -20px; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="masthead">
+    <div class="kicker">SIMA · CLICKABLE PROTOTYPE</div>
+    <h1>The complete concept, walked through</h1>
+    <p>Every section of the product vision, clickable: Plan, Start Day navigation, Vision & Performance under Insights, and Capture the Day under Profile. Buttons inside the phone are genuine product decisions. The small control below the phone just fast-forwards time.</p>
+  </div>
+  <div class="phase-label" id="phaseLabel">PLAN</div>
+  <div class="progress-rail" id="rail"></div>
+  <div class="phone">
+    <div class="notch"></div>
+    <div class="statusbar">
+      <span>9:41</span>
+      <div class="icons">
+        <svg width="16" height="11" viewBox="0 0 16 11" fill="none"><rect x="0" y="7" width="2.5" height="4" rx="0.6" fill="#13151C"/><rect x="4" y="5" width="2.5" height="6" rx="0.6" fill="#13151C"/><rect x="8" y="3" width="2.5" height="8" rx="0.6" fill="#13151C"/><rect x="12" y="0.5" width="2.5" height="10.5" rx="0.6" fill="#13151C"/></svg>
+        <svg width="22" height="11" viewBox="0 0 24 11" fill="none"><rect x="0.5" y="0.5" width="19" height="10" rx="2.5" stroke="#13151C"/><rect x="2" y="2" width="14" height="7" rx="1.3" fill="#13151C"/><rect x="21" y="3.5" width="1.6" height="4" rx="0.8" fill="#13151C"/></svg>
+      </div>
+    </div>
+    <div class="appbar" id="appbar"></div>
+    <div class="content" id="screen"></div>
+    <div class="voice-panel" id="voicePanel"></div>
+    <div class="voice-fab" id="voiceFab" onclick="toggleVoice()" style="display:none;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3z" stroke="#fff" stroke-width="2"/><path d="M19 11a7 7 0 01-14 0M12 18v3" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+    </div>
+    <div class="tabbar" id="tabbar"></div>
+  </div>
+  <div class="demo-bar" id="demoBar"></div>
+  <div class="restart-link" onclick="restart()">↺ Restart the walkthrough</div>
+  <div class="scope-note">
+    <h3>What's still just for show here</h3>
+    <p>This is a click-through, not a working app: the Vision sliders and radar update live, but Performance Index/Capital and the life feed use seeded example numbers rather than real behavior data. Voice commands, the camera for Capture the Day, and live traffic/calendar are simulated — tapping them shows what would happen rather than actually doing it. That's the boundary between "here's the idea" and "here's the engineering," which is the next phase of work.</p>
+  </div>
+</div>
+
+<script>
+const STEPS = ['plan','structure','preview','now1','atrisk','prepare','leave','onway','arrived','conflict','complete'];
+const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN',
+  now1:'NAVIGATE', atrisk:'NAVIGATE', prepare:'NAVIGATE', leave:'NAVIGATE', onway:'NAVIGATE', arrived:'NAVIGATE', conflict:'NAVIGATE',
+  complete:'REFLECT', insights:'INSIGHTS', profile:'PROFILE', captureDay:'PROFILE' };
+const VISION_AXES = [
+  {key:'achievement', label:'Achievement'},
+  {key:'health', label:'Health'},
+  {key:'relationships', label:'Relationships'},
+  {key:'growth', label:'Growth'},
+  {key:'recovery', label:'Recovery'},
+  {key:'personal', label:'Personal'},
+];
+let vision = {achievement:90, health:80, relationships:70, growth:65, recovery:50, personal:40};
+const reality = {achievement:93, health:52, relationships:38, growth:60, recovery:55, personal:45};
+let capturedDays = [
+  {day:46, date:'Sep 5', caption:'Shipped the SIMA prototype to the first tester.', swatch:'linear-gradient(135deg,#4954F0,#8B5CF6)', signals:'3/3 Signals'},
+  {day:45, date:'Sep 4', caption:'Long overdue call with mom. Worth the reroute.', swatch:'linear-gradient(135deg,#149C88,#4954F0)', signals:'2/3 Signals'},
+];
+let captureSwatchIndex = 0;
+const CAPTURE_SWATCHES = ['linear-gradient(135deg,#4954F0,#8B5CF6)','linear-gradient(135deg,#149C88,#4954F0)','linear-gradient(135deg,#E39A2A,#E8503A)','linear-gradient(135deg,#8B5CF6,#E8503A)'];
+let voiceOpen = false;
+
+/* ---------- REAL persistence (survives closing the page) ---------- */
+function saveToStorage(){
+  try {
+    localStorage.setItem('sima_activities', JSON.stringify(activities));
+    localStorage.setItem('sima_captured', JSON.stringify(capturedDays));
+    localStorage.setItem('sima_vision', JSON.stringify(vision));
+  } catch(e){ console.warn('Storage unavailable:', e); }
+}
+function loadFromStorage(){
+  try {
+    const a = localStorage.getItem('sima_activities');
+    const c = localStorage.getItem('sima_captured');
+    const v = localStorage.getItem('sima_vision');
+    if (a) activities = JSON.parse(a);
+    if (c) capturedDays = JSON.parse(c);
+    if (v) vision = JSON.parse(v);
+  } catch(e){ console.warn('Storage unavailable:', e); }
+}
+
+/* ---------- REAL notifications, scheduled against the actual clock ---------- */
+let scheduledTimers = [];
+let notifStatus = 'default'; // 'default' | 'granted' | 'denied' | 'unsupported'
+
+function parseDurationToMinutes(dur){
+  // handles "2h", "45m", "1h 30m", "30 min"
+  let total = 0;
+  const hrMatch = dur.match(/(\d+)\s*h/i);
+  const minMatch = dur.match(/(\d+)\s*m/i);
+  if (hrMatch) total += parseInt(hrMatch[1], 10) * 60;
+  if (minMatch) total += parseInt(minMatch[1], 10);
+  if (!hrMatch && !minMatch) {
+    const n = parseInt(dur, 10);
+    if (!isNaN(n)) total = n;
+  }
+  return total || 1;
+}
+
+async function fireNotification(title, body){
+  if (notifStatus !== 'granted') return;
+  try {
+    if ('serviceWorker' in navigator) {
+      const reg = await navigator.serviceWorker.ready;
+      reg.showNotification(title, { body, icon: undefined, badge: undefined });
+    } else {
+      new Notification(title, { body });
+    }
+  } catch(e){ console.warn('Notification failed:', e); }
+}
+
+function clearScheduledNotifications(){
+  scheduledTimers.forEach(id => clearTimeout(id));
+  scheduledTimers = [];
+}
+
+/// Schedules a real notification at the end of each activity, based on the
+/// actual system clock — not the fictional times shown elsewhere in the demo.
+/// This is what makes "Start Day" genuinely testable in real time: set short
+/// durations (e.g. "2 min") on your activities and background the browser.
+function scheduleRealNotifications(){
+  clearScheduledNotifications();
+  if (notifStatus !== 'granted') return;
+  const ordered = [...activities].sort((a,b)=> 0); // keep entry order for the real-time test
+  let cursorMs = Date.now();
+  ordered.forEach((act, i) => {
+    const mins = parseDurationToMinutes(act.dur);
+    cursorMs += mins * 60 * 1000;
+    const delay = cursorMs - Date.now();
+    const next = ordered[i+1];
+    const id = setTimeout(() => {
+      fireNotification(
+        `Time's up: ${act.name}`,
+        next ? `Up next: ${next.name}` : 'That was your last planned activity today.'
+      );
+    }, Math.max(delay, 0));
+    scheduledTimers.push(id);
+  });
+}
+
+async function requestNotifications(){
+  if (!('Notification' in window)) {
+    notifStatus = 'unsupported';
+    toast("This browser doesn't support notifications");
+    render();
+    return;
+  }
+  const perm = await Notification.requestPermission();
+  notifStatus = perm;
+  if (perm === 'granted') {
+    toast('Real notifications enabled');
+  } else {
+    toast('Notifications blocked — check Settings');
+  }
+  render();
+}
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW registration failed:', e));
+  });
+  if (Notification && Notification.permission) notifStatus = Notification.permission;
+}
+
+loadFromStorage();
+const TYPE_COLOR = { focus:'var(--focus)', meeting:'var(--meeting)', prepare:'var(--prepare)', personal:'var(--personal)' };
+const TYPE_SOFT = { focus:'var(--focus-soft)', meeting:'var(--meeting-soft)', prepare:'var(--prepare-soft)', personal:'var(--personal-soft)' };
+const PRI_COLOR = { signal:'var(--focus)', next:'var(--meeting)', later:'var(--ink-faint)' };
+
+let activities = [
+  {time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
+  {time:'11:30', name:'Gym', dur:'1h', priority:'next', type:'personal'},
+  {time:'14:00', name:'Client meeting', dur:'1h', priority:'signal', type:'meeting'},
+  {time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
+  {time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
+];
+let newActPriority = 'signal';
+let lastNavScreen = 'now1';
+
+let state = { screen:'plan', structure:null, riskChoice:null, conflictChoice:null,
+  checks:{laptop:false, deck:false, contract:false} };
+
+function toast(msg){
+  let t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#20232D;color:#fff;padding:10px 18px;border-radius:20px;font-size:12.5px;font-family:Inter,sans-serif;z-index:99;opacity:0;transition:opacity .2s;box-shadow:0 8px 24px rgba(0,0,0,0.25);';
+  document.body.appendChild(t);
+  requestAnimationFrame(()=>{ t.style.opacity='1'; });
+  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),250); }, 1900);
+}
+
+function go(screen){
+  state.screen = screen;
+  if (PHASE[screen] === 'NAVIGATE') lastNavScreen = screen;
+  render();
+}
+function restart(){
+  clearScheduledNotifications();
+  activities = [
+    {time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
+    {time:'11:30', name:'Gym', dur:'1h', priority:'next', type:'personal'},
+    {time:'14:00', name:'Client meeting', dur:'1h', priority:'signal', type:'meeting'},
+    {time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
+    {time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
+  ];
+  state = { screen:'plan', structure:null, riskChoice:null, conflictChoice:null, checks:{laptop:false,deck:false,contract:false} };
+  lastNavScreen = 'now1';
+  captureSwatchIndex = 0;
+  voiceOpen = false;
+  saveToStorage();
+  render();
+}
+function toggleCheck(key){ state.checks[key] = !state.checks[key]; render(); }
+function selectStructure(s){ state.structure = s; render(); }
+function selectNewPriority(p){ newActPriority = p; render(); }
+
+function saveActivity(){
+  const title = document.getElementById('newActTitle').value.trim();
+  const time = document.getElementById('newActTime').value.trim() || '—';
+  const dur = document.getElementById('newActDur').value.trim() || '30 min';
+  if(!title){ toast('Give the activity a title first'); return; }
+  activities.push({ time, name:title, dur, priority:newActPriority, type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
+  newActPriority = 'signal';
+  saveToStorage();
+  toast('Added to today');
+  go('plan');
+}
+
+/* ---------- icons ---------- */
+const I = {
+  back:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  menu:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+  bell:`<svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M13.7 21a2 2 0 01-3.4 0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+  sliders:`<svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 6h10M18 6h2M4 12h2M8 12h12M4 18h14M20 18h0" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="6" r="2" fill="#fff" stroke="currentColor" stroke-width="2"/><circle cx="6" cy="12" r="2" fill="#fff" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="18" r="2" fill="#fff" stroke="currentColor" stroke-width="2"/></svg>`,
+  more:`<svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>`,
+  grip:`<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>`,
+  warn:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 3l10 18H2L12 3z" stroke="#E8503A" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4" stroke="#E8503A" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.3" r="1" fill="#E8503A"/></svg>`,
+  chev:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  check:`<svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  tabDay:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M15 9l-2 6-6 2 2-6 6-2z" fill="currentColor"/></svg>`,
+  tabPlan:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="3" rx="1" fill="currentColor"/><rect x="4" y="11" width="16" height="3" rx="1" fill="currentColor"/><rect x="4" y="17" width="10" height="3" rx="1" fill="currentColor"/></svg>`,
+  tabInsights:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="4" y="12" width="4" height="8" rx="1" fill="currentColor"/><rect x="10" y="7" width="4" height="13" rx="1" fill="currentColor"/><rect x="16" y="3" width="4" height="17" rx="1" fill="currentColor"/></svg>`,
+  tabProfile:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="2"/><path d="M4 20c1.5-4 5-6 8-6s6.5 2 8 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`,
+};
+
+function ring(percent, color, size, big, small){
+  const r = 30, c = 2*Math.PI*r;
+  const off = c * (1 - percent/100);
+  return `<div class="ring-wrap" style="width:${size}px;height:${size}px;">
+    <svg viewBox="0 0 76 76" width="${size}" height="${size}">
+      <circle cx="38" cy="38" r="${r}" stroke="#EEF0F6" stroke-width="6" fill="none"/>
+      <circle cx="38" cy="38" r="${r}" stroke="${color}" stroke-width="6" fill="none" stroke-linecap="round"
+        stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 38 38)"/>
+    </svg>
+    <div class="num"><b>${big}</b><span>${small}</span></div>
+  </div>`;
+}
+
+function heroMap(){
+  return `<div class="hero-map"><svg viewBox="0 0 300 90" preserveAspectRatio="none">
+    <path d="M20 65 Q 90 15 150 40 T 280 22" stroke="#8FA0FF" stroke-width="2" fill="none" stroke-dasharray="1 8" stroke-linecap="round"/>
+    <circle cx="20" cy="65" r="5" fill="#fff"/>
+    <circle cx="280" cy="22" r="6" fill="#4954F0" stroke="#fff" stroke-width="2"/>
+  </svg></div>`;
+}
+
+/* ---------- radar chart (Vision vs Reality) ---------- */
+function radarPoint(cx, cy, radius, index, total, value){
+  const angle = (Math.PI * 2 * index) / total - Math.PI / 2;
+  const r = radius * (value / 100);
+  return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+}
+function radarChart(){
+  const cx = 110, cy = 110, radius = 84;
+  const rings = [0.25, 0.5, 0.75, 1];
+  const gridRings = rings.map(f => {
+    const pts = VISION_AXES.map((a,i)=> radarPoint(cx,cy,radius*f,i,VISION_AXES.length,100));
+    return `<polygon points="${pts.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="#E9EBF3" stroke-width="1"/>`;
+  }).join('');
+  const spokes = VISION_AXES.map((a,i)=>{
+    const p = radarPoint(cx,cy,radius,i,VISION_AXES.length,100);
+    return `<line x1="${cx}" y1="${cy}" x2="${p.x}" y2="${p.y}" stroke="#E9EBF3" stroke-width="1"/>`;
+  }).join('');
+  const labels = VISION_AXES.map((a,i)=>{
+    const p = radarPoint(cx,cy,radius+18,i,VISION_AXES.length,100);
+    return `<text x="${p.x}" y="${p.y}" font-size="9" font-weight="700" fill="#A4A8B4" text-anchor="middle" dominant-baseline="middle">${a.label}</text>`;
+  }).join('');
+  const visionPts = VISION_AXES.map((a,i)=> radarPoint(cx,cy,radius,i,VISION_AXES.length,vision[a.key]));
+  const realityPts = VISION_AXES.map((a,i)=> radarPoint(cx,cy,radius,i,VISION_AXES.length,reality[a.key]));
+  const poly = pts => pts.map(p=>`${p.x},${p.y}`).join(' ');
+  return `<svg viewBox="0 0 220 220" width="220" height="220">
+    ${gridRings}${spokes}${labels}
+    <polygon points="${poly(visionPts)}" fill="rgba(73,84,240,0.14)" stroke="#4954F0" stroke-width="2"/>
+    <polygon points="${poly(realityPts)}" fill="rgba(232,80,58,0.12)" stroke="#E8503A" stroke-width="2"/>
+  </svg>`;
+}
+
+/* ---------- voice ---------- */
+const VOICE_COMMANDS = [
+  {text:'"Done."', response:"Marked as done — moving you to what's next."},
+  {text:'"Skip this."', response:'Skipped. Recalculating the rest of your day.'},
+  {text:'"Give me another 20 minutes."', response:'Added 20 minutes — checking what still fits.'},
+  {text:"\"What's next?\"", response:'Your next commitment is Client meeting at 14:00.'},
+];
+function toggleVoice(){ voiceOpen = !voiceOpen; renderVoicePanel(); }
+function runVoiceCommand(i){
+  voiceOpen = false;
+  renderVoicePanel();
+  toast(VOICE_COMMANDS[i].response);
+}
+function renderVoicePanel(){
+  const panel = document.getElementById('voicePanel');
+  if (!panel) return;
+  panel.className = 'voice-panel' + (voiceOpen ? ' open' : '');
+  panel.innerHTML = `<div class="hdr">TRY SAYING</div>
+    ${VOICE_COMMANDS.map((c,i)=>`<div class="voice-cmd" onclick="runVoiceCommand(${i})">${c.text}</div>`).join('')}`;
+}
+
+/* ---------- app bar / tab bar ---------- */
+function renderChrome(){
+  const s = state.screen;
+  const bar = document.getElementById('appbar');
+  if (s === 'plan'){
+    bar.innerHTML = `<div class="side">${I.menu}</div><div class="brand">SIMA</div><div class="side right icon-btn" onclick="toast('No new notifications')">${I.bell}</div>`;
+  } else if (s === 'now1' || s === 'atrisk'){
+    bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">Day</div><div class="side right icon-btn" onclick="toast('Settings coming later')">${I.sliders}</div>`;
+  } else if (['prepare','leave','onway','arrived','conflict'].includes(s)){
+    bar.innerHTML = `<div class="side icon-btn" onclick="toast('You can\\'t rewind a day in progress')">${I.back}</div><div class="title">${titleFor(s)}</div><div class="side right icon-btn" onclick="toast('Nothing here yet')">${I.more}</div>`;
+  } else if (s === 'complete'){
+    bar.innerHTML = `<div class="side"></div><div class="title">Day complete</div><div class="side right"></div>`;
+  } else if (s === 'addActivity'){
+    bar.innerHTML = `<div class="side textbtn" onclick="go('plan')" style="width:auto;">Cancel</div><div class="title">Add activity</div><div class="side right textbtn accent" style="width:auto;" onclick="saveActivity()">Save</div>`;
+  } else if (s === 'insights'){
+    bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">Insights</div><div class="side right"></div>`;
+  } else if (s === 'profile'){
+    bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">Profile</div><div class="side right"></div>`;
+  } else if (s === 'captureDay'){
+    bar.innerHTML = `<div class="side textbtn" onclick="go('profile')" style="width:auto;">Cancel</div><div class="title">Capture the day</div><div class="side right textbtn accent" style="width:auto;" onclick="saveCapture()">Save</div>`;
+  } else {
+    const back = {structure:'plan', preview:'structure'}[s] || 'plan';
+    bar.innerHTML = `<div class="side icon-btn" onclick="go('${back}')">${I.back}</div><div class="title">${titleFor(s)}</div><div class="side right"></div>`;
+  }
+
+  const tabbar = document.getElementById('tabbar');
+  const inNav = PHASE[s] === 'NAVIGATE';
+  const inPlan = PHASE[s] === 'PLAN';
+  const inInsights = PHASE[s] === 'INSIGHTS';
+  const inProfile = PHASE[s] === 'PROFILE';
+  tabbar.innerHTML = `
+    <div class="tab ${inNav?'active':''}" onclick="goDay()">${I.tabDay}<span>Day</span></div>
+    <div class="tab ${inPlan?'active':''}" onclick="go('plan')">${I.tabPlan}<span>Plan</span></div>
+    <div class="tab ${inInsights?'active':''}" onclick="go('insights')">${I.tabInsights}<span>Insights</span></div>
+    <div class="tab ${inProfile?'active':''}" onclick="go('profile')">${I.tabProfile}<span>Profile</span></div>
+  `;
+
+  const fab = document.getElementById('voiceFab');
+  fab.style.display = inNav ? 'flex' : 'none';
+  if (!inNav) { voiceOpen = false; }
+  renderVoicePanel();
+}
+function goDay(){
+  if (PHASE[state.screen] === 'PLAN') { toast('Press Start Day to begin navigating'); return; }
+  go(lastNavScreen);
+}
+function titleFor(s){
+  return { structure:'Choose structure', preview:'Preview day', prepare:'Prepare', leave:'Leave now',
+    onway:'On the way', arrived:'Arrived', conflict:'Schedule conflict' }[s] || '';
+}
+
+/* ---------- screens ---------- */
+function screenPlan(){
+  const groups = [
+    {key:'signal', label:'Signal', hint:'Most important'},
+    {key:'next', label:'Next', hint:'Important'},
+    {key:'later', label:'Later', hint:'If time permits'},
+  ];
+  return `
+    <div class="title-lg">Today</div>
+    <div class="subtitle">What needs to happen today?</div>
+    ${groups.map(g=>{
+      const items = activities.filter(a=>a.priority===g.key);
+      return `<div class="section-label">${g.label} <span class="count">· ${g.hint}</span></div>
+        ${items.map(a=>`
+          <div class="item-row">
+            <div class="p-dot" style="background:${PRI_COLOR[a.priority]}"></div>
+            <div class="item-main"><div class="item-name">${a.name}</div><div class="item-meta">${a.time} · ${a.dur}</div></div>
+            <div class="grip">${I.grip}</div>
+          </div>`).join('') || '<div class="subtitle" style="margin:2px 0 10px;">Nothing here yet.</div>'}`;
+    }).join('')}
+    <div class="add-row" onclick="go('addActivity')">+ Add activity</div>
+    <div style="height:8px;"></div>
+    <button class="btn-primary" onclick="go('structure')">Choose structure</button>
+  `;
+}
+
+function screenAddActivity(){
+  return `
+    <div class="field">
+      <label>Title</label>
+      <input id="newActTitle" type="text" placeholder="e.g. Finish SIMA pitch">
+    </div>
+    <div class="field">
+      <label>Priority</label>
+      <div class="chip-row">
+        <div class="p-chip ${newActPriority==='signal'?'sel-signal':''}" onclick="selectNewPriority('signal')">Signal</div>
+        <div class="p-chip ${newActPriority==='next'?'sel-next':''}" onclick="selectNewPriority('next')">Next</div>
+        <div class="p-chip ${newActPriority==='later'?'sel-later':''}" onclick="selectNewPriority('later')">Later</div>
+      </div>
+    </div>
+    <div class="field"><label>Time (optional)</label><input id="newActTime" type="text" placeholder="e.g. 10:00 AM"></div>
+    <div class="field"><label>Duration</label><input id="newActDur" type="text" placeholder="e.g. 45 min"></div>
+    <div class="field"><label>Preparation notes (optional)</label><textarea rows="2" placeholder="Anything to bring or review"></textarea></div>
+  `;
+}
+
+function screenStructure(){
+  const opts = [
+    {id:'balanced', name:'Balanced', desc:'Mix of focus, meetings and personal time.'},
+    {id:'focus', name:'Focus First', desc:'Front-load deep work, then meetings.'},
+    {id:'meetings', name:'Meetings First', desc:'Group meetings early, focus time later.'},
+    {id:'outabout', name:'Out & About', desc:'Optimize for travel and external meetings.'},
+    {id:'custom', name:'Custom', desc:'Build your own structure.'},
+  ];
+  return `
+    <div class="subtitle" style="margin-top:2px;">SIMA will build your day around what matters most.</div>
+    ${opts.map(o=>`
+      <div class="struct-row ${state.structure===o.id?'selected':''}" onclick="selectStructure('${o.id}')">
+        <div class="struct-icon">${I.tabInsights}</div>
+        <div class="struct-main"><div class="struct-name">${o.name}</div><div class="struct-desc">${o.desc}</div></div>
+        <div class="radio ${state.structure===o.id?'on':''}"></div>
+      </div>`).join('')}
+    <div style="height:6px;"></div>
+    <button class="btn-primary" ${state.structure?'':'disabled'} onclick="go('preview')">Preview day</button>
+  `;
+}
+
+function screenPreview(){
+  const sorted = [...activities].sort((a,b)=> a.time.localeCompare(b.time));
+  return `
+    <div class="preview-header">
+      <div class="subtitle" style="margin:6px 0;">Today · Meetings First</div>
+    </div>
+    ${sorted.map(a=>`
+      <div class="t-row">
+        <div class="t-time">${a.time}</div>
+        <div class="t-card">
+          <div class="t-swatch" style="background:${TYPE_SOFT[a.type]};"></div>
+          <div><div class="t-name">${a.name}</div><div class="t-sub" style="color:${TYPE_COLOR[a.type]}">${a.priority.toUpperCase()} · ${a.dur}</div></div>
+        </div>
+      </div>`).join('')}
+    ${notifStatus !== 'granted' ? `
+      <div class="insight-card" style="margin-top:6px;">
+        <div class="insight-label">REAL NOTIFICATIONS</div>
+        <div class="insight-body" style="margin-bottom:10px;">Turn these on to actually get notified — for real, on this device — when each activity's time is up. Best for a live test: set short durations (like "2 min") above.</div>
+        <button class="btn-outline" onclick="requestNotifications()">Enable real notifications</button>
+      </div>` : `
+      <div class="insight-card" style="margin-top:6px;">
+        <div class="insight-label">REAL NOTIFICATIONS</div>
+        <div class="insight-body">✓ Enabled — Start Day will schedule real alerts against your actual clock.</div>
+      </div>`}
+    <div style="height:8px;"></div>
+    <button class="btn-primary" style="box-shadow:0 10px 24px -8px rgba(73,84,240,0.45);" onclick="startDayLive()">Start Day</button>
+  `;
+}
+
+function startDayLive(){
+  scheduleRealNotifications();
+  saveToStorage();
+  go('now1');
+}
+
+function screenNow1(){
+  return `
+    ${heroMap()}
+    <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ON TRACK</div>
+    <div class="now-card" style="margin-top:12px;">
+      <div class="now-top">
+        <div><div class="now-name">Finish SIMA pitch</div><div class="now-sub">Finish by 13:20</div></div>
+        ${ring(72, 'var(--focus)', 68, '18', 'min left')}
+      </div>
+    </div>
+    <div class="up-next-card">
+      <div class="up-next-label">UP NEXT</div>
+      <div class="up-next-row"><div class="up-next-name">Client meeting</div><div class="up-next-time">14:00</div></div>
+      <div class="action-chip" onclick="toast('Opens the meeting link')">Join meeting</div>
+    </div>
+  `;
+}
+
+function screenAtRisk(){
+  return `
+    <div class="alert-card">
+      <div class="alert-top">${I.warn}
+        <div><div class="alert-title">You're at risk of being late</div>
+        <div class="alert-sub">Keep going another 8 minutes and you'll arrive late to your 14:00 with the client.</div></div>
+      </div>
+    </div>
+    <div class="choice-card" onclick="state.riskChoice='wrap'; go('prepare')">
+      <div><div class="choice-title">Wrap up now</div><div class="choice-sub">Stop at a clean point — you'll leave with a comfortable buffer.</div></div>
+      <div class="icon-btn">${I.chev}</div>
+    </div>
+    <div class="choice-card" onclick="state.riskChoice='push'; go('prepare')">
+      <div><div class="choice-title">Push through 8 more minutes</div><div class="choice-sub">Still doable, but the buffer drops to almost nothing.</div></div>
+      <div class="icon-btn">${I.chev}</div>
+    </div>
+  `;
+}
+
+function screenPrepare(){
+  const tight = state.riskChoice === 'push';
+  const items = [ {k:'laptop', label:'Laptop'}, {k:'deck', label:'Pitch deck, printed'}, {k:'contract', label:'Signed contract draft'} ];
+  return `
+    <div class="section-label">CURRENT</div>
+    <div class="up-next-card" style="margin-bottom:14px;">
+      <div class="up-next-row"><div class="up-next-name">Finish SIMA pitch</div><div class="up-next-time">${tight?'0':'8'} min remaining</div></div>
+    </div>
+    <div class="checklist">
+      <div class="cl-label">PREPARE NOW</div>
+      ${items.map(it=>`
+        <div class="check-row" onclick="toggleCheck('${it.k}')">
+          <div class="check-box ${state.checks[it.k]?'on':''}">${state.checks[it.k]?I.check:''}</div>
+          <div class="check-label ${state.checks[it.k]?'on':''}">${it.label}</div>
+        </div>`).join('')}
+    </div>
+    <div class="now-card" style="display:flex;align-items:center;justify-content:space-between;">
+      <div><div class="now-sub" style="font-weight:800;color:var(--ink);font-size:13.5px;">Leave in</div>
+      <div class="now-sub">${tight? 'Buffer down to 4 min' : 'Client meeting in 40 min'}</div></div>
+      ${ring(tight?25:65, tight?'var(--tight)':'var(--focus)', 60, tight?'8':'18', 'min')}
+    </div>
+    <div style="height:2px;"></div>
+    <button class="btn-primary" style="margin-top:14px;" onclick="go('leave')">Continue to leave</button>
+  `;
+}
+
+function screenLeave(){
+  const tight = state.riskChoice === 'push';
+  return `
+    <div class="section-label">DESTINATION</div>
+    <div class="title-lg" style="margin-top:0;">Meridian Client HQ</div>
+    <div class="subtitle" style="margin-bottom:16px;">4th Floor, Reception</div>
+    <div class="stat-strip">
+      <div class="stat-chip"><div class="num">22 min</div><div class="lab">DRIVE</div></div>
+      <div class="stat-chip"><div class="num">${tight?'13:58':'13:52'}</div><div class="lab">ARRIVAL</div></div>
+      <div class="stat-chip"><div class="num">${tight?'2 min':'8 min'}</div><div class="lab">BUFFER</div></div>
+    </div>
+    <div class="route-card">
+      <svg viewBox="0 0 280 70"><path d="M10 55 Q 90 10 150 30 T 270 15" stroke="#4954F0" stroke-width="2.5" fill="none" stroke-linecap="round"/><circle cx="10" cy="55" r="5" fill="#13151C"/><circle cx="270" cy="15" r="6" fill="#4954F0" stroke="#fff" stroke-width="2"/></svg>
+    </div>
+    <button class="btn-primary" onclick="go('onway')">Start drive</button>
+  `;
+}
+
+function screenOnWay(){
+  const tight = state.riskChoice === 'push';
+  return `
+    <div class="status-pill ${tight?'tight':'ontrack'}"><div class="pdot" style="background:${tight?'var(--tight)':'var(--ontrack)'}"></div>${tight?'TIGHT':'ON TRACK'}</div>
+    <div class="title-lg" style="margin-top:12px;">Meridian Client HQ</div>
+    <div class="subtitle" style="margin-bottom:14px;">Arriving ${tight?'13:58':'13:52'}</div>
+    <div class="route-card">
+      <svg viewBox="0 0 280 70"><path d="M10 55 Q 90 10 150 30 T 270 15" stroke="#4954F0" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-dasharray="1 7"/><circle cx="10" cy="55" r="5" fill="#13151C"/><circle cx="270" cy="15" r="6" fill="#4954F0" stroke="#fff" stroke-width="2"/></svg>
+    </div>
+    <div class="up-next-card">
+      <div class="up-next-label">NEXT COMMITMENT</div>
+      <div class="up-next-row"><div class="up-next-name">Client meeting</div><div class="up-next-time">14:00</div></div>
+    </div>
+  `;
+}
+
+function screenArrived(){
+  const tight = state.riskChoice === 'push';
+  return `
+    <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ARRIVED</div>
+    <div class="now-card" style="margin-top:12px;">
+      <div class="now-top">
+        <div><div class="now-name">Client meeting</div><div class="now-sub">Starts soon</div></div>
+        ${ring(tight?20:60,'var(--focus)',68, tight?'2':'8', 'min')}
+      </div>
+    </div>
+    <div class="up-next-card">
+      <div class="up-next-label">ONE LAST THING</div>
+      <div class="up-next-row"><div class="up-next-name">Review the pitch deck once more</div></div>
+      <div class="action-chip" onclick="toast('Opens the pitch deck')">Open document</div>
+    </div>
+  `;
+}
+
+function screenConflict(){
+  return `
+    <div class="alert-card">
+      <div class="alert-top">${I.warn}
+        <div><div class="alert-title">Schedule conflict</div>
+        <div class="alert-sub">Your haircut is running about 40 minutes behind. Finishing the full appointment means arriving late to dinner.</div></div>
+      </div>
+      <div style="margin-top:10px;">
+        <div class="conflict-item"><div class="nm">Haircut</div><div class="tm">Running late</div></div>
+        <div class="conflict-item"><div class="nm">Dinner with Sarah</div><div class="tm">20:00</div></div>
+      </div>
+    </div>
+    <div class="choice-card" onclick="state.conflictChoice='A'; go('complete')">
+      <div><div class="choice-title">Cut it short</div><div class="choice-sub">Leave the salon at 19:20 · arrive at 20:00, right on time.</div></div>
+      <div class="icon-btn">${I.chev}</div>
+    </div>
+    <div class="choice-card" onclick="state.conflictChoice='B'; go('complete')">
+      <div><div class="choice-title">Finish the appointment</div><div class="choice-sub">Leave at 19:45 · arrive around 20:15, 15 minutes late.</div></div>
+      <div class="icon-btn">${I.chev}</div>
+    </div>
+  `;
+}
+
+function screenComplete(){
+  const onTime = state.conflictChoice === 'A' ? '100%' : '91%';
+  const note = state.conflictChoice === 'B'
+    ? 'One commitment shifted today — dinner started 15 minutes late after your haircut ran over.'
+    : 'Every commitment happened on time today, including a mid-afternoon reroute you handled yourself.';
+  return `
+    <div class="complete-hero"><div class="lab">DAY COMPLETE</div><div class="big">3 / 3 Signals</div></div>
+    <div class="stat-strip">
+      <div class="stat-chip"><div class="num">${onTime}</div><div class="lab">ON SCHEDULE</div></div>
+      <div class="stat-chip"><div class="num">7h 15m</div><div class="lab">EXECUTED</div></div>
+    </div>
+    <div class="note-line">${note}</div>
+    <button class="btn-primary" onclick="go('captureDay')">Capture the day</button>
+    <button class="btn-outline" style="margin-top:10px;" onclick="restart()">Skip · Plan tomorrow</button>
+  `;
+}
+
+/* ---------- Insights: Vision, Trajectory, Performance ---------- */
+function updateVision(key, val){
+  vision[key] = Number(val);
+  saveToStorage();
+  render();
+}
+function screenInsights(){
+  return `
+    <div class="title-lg" style="margin-top:0;">Insights</div>
+    <div class="subtitle" style="margin-bottom:14px;">Where your days are actually going, against what you said matters.</div>
+
+    <div class="section-label" style="margin-top:0;">VISION</div>
+    <div class="subtitle" style="margin-bottom:10px;">Drag to set how much weight each area should carry.</div>
+    ${VISION_AXES.map(a=>`
+      <div class="vision-row">
+        <div class="vision-row-top"><div class="lbl">${a.label}</div><div class="val">${vision[a.key]}</div></div>
+        <input type="range" min="0" max="100" value="${vision[a.key]}" oninput="updateVision('${a.key}', this.value)">
+      </div>`).join('')}
+
+    <div class="section-label">VISION VS REALITY</div>
+    <div class="radar-card">
+      ${radarChart()}
+      <div class="radar-legend">
+        <span><i style="background:var(--accent);"></i>Vision</span>
+        <span><i style="background:var(--risk);"></i>Reality</span>
+      </div>
+    </div>
+
+    <div class="insight-card">
+      <div class="insight-label">TRAJECTORY</div>
+      <div class="insight-body">Your Vision leans hardest on <b>Achievement</b> and <b>Health</b>. Over the last 30 days, Achievement has been climbing while Health has been slipping — that gap is the widest one on the board.</div>
+    </div>
+
+    <div class="section-label">PERFORMANCE</div>
+    <div class="insight-card">
+      <div class="insight-label">PERFORMANCE INDEX</div>
+      <div class="perf-row">
+        <div><div class="perf-num">87</div><div class="perf-trend">↑ 4 this week</div></div>
+      </div>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">PERFORMANCE CAPITAL</div>
+      <div class="capital-num">2,745 pts <span style="color:var(--ontrack);font-size:13px;font-weight:700;">+128 today</span></div>
+      <div class="insight-body" style="margin-top:6px;">Earned by keeping the promises you made to yourself — Signal commitments count for far more than clearing small Later tasks.</div>
+    </div>
+  `;
+}
+
+/* ---------- Profile: Capture the Day, life feed, memory ---------- */
+function screenProfile(){
+  return `
+    <div class="profile-header">
+      <div class="profile-avatar"></div>
+      <div><div class="profile-name">You</div><div class="profile-meta">Day 47 · Started Jul 22</div></div>
+    </div>
+
+    <div class="memory-card">
+      <div class="memory-label">MEMORY · 45 DAYS AGO</div>
+      <div class="memory-text">Your first completed Signal streak — three days in a row without missing one.</div>
+    </div>
+
+    <div class="capture-prompt" onclick="go('captureDay')">
+      <div style="font-size:22px;">📷</div>
+      <div class="txt"><b>Capture today</b><span>Day 47 is complete — give it a photo before it fades.</span></div>
+    </div>
+
+    <div class="section-label" style="margin-top:2px;">YOUR DAYS</div>
+    ${capturedDays.slice().reverse().map(d=>`
+      <div class="feed-card">
+        <div class="feed-photo" style="background:${d.swatch};"></div>
+        <div><div class="feed-day">DAY ${d.day} · ${d.date}</div><div class="feed-caption">${d.caption}</div><div class="feed-stats">${d.signals}</div></div>
+      </div>`).join('')}
+
+    <div class="section-label">NOTIFICATIONS YOU'D GET</div>
+    <div class="insight-card">
+      <div class="notif-row"><div class="txt"><span class="tag">PREPARE</span><br>Start preparing for Client meeting in 10 minutes.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">LEAVE NOW</span><br>Leave in 5 minutes to make your 14:00.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">AT RISK</span><br>Your next commitment is now at risk.</div></div>
+    </div>
+  `;
+}
+
+function screenCaptureDay(){
+  return `
+    <div class="capture-photo-lg" style="background:${CAPTURE_SWATCHES[captureSwatchIndex]};display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,0.85);font-size:13px;font-weight:700;">Tap a color below to simulate a photo</div>
+    <div class="swatch-row">
+      ${CAPTURE_SWATCHES.map((sw,i)=>`<div class="swatch ${i===captureSwatchIndex?'selected':''}" style="background:${sw};" onclick="captureSwatchIndex=${i}; render();"></div>`).join('')}
+    </div>
+    <div class="field">
+      <label>Caption</label>
+      <textarea id="captureCaption" rows="2" placeholder="What happened today?"></textarea>
+    </div>
+    <div class="insight-card">
+      <div class="insight-label">TODAY'S SUMMARY</div>
+      <div class="insight-body">3/3 Signals completed · ${state.conflictChoice === 'B' ? '91%' : '100%'} on schedule · 7h 15m executed</div>
+    </div>
+  `;
+}
+function saveCapture(){
+  const caption = document.getElementById('captureCaption').value.trim() || 'A day with SIMA.';
+  capturedDays.push({
+    day: 47, date: 'Sep 6', caption,
+    swatch: CAPTURE_SWATCHES[captureSwatchIndex],
+    signals: (state.conflictChoice === 'B' ? '91% on time' : '3/3 Signals'),
+  });
+  captureSwatchIndex = 0;
+  saveToStorage();
+  toast('Day captured');
+  go('profile');
+}
+
+/* ---------- render ---------- */
+function renderRail(){
+  const rail = document.getElementById('rail');
+  const inLoop = STEPS.includes(state.screen) || state.screen === 'addActivity';
+  if (!inLoop) {
+    rail.style.display = 'none';
+  } else {
+    rail.style.display = 'flex';
+    let idx = STEPS.indexOf(state.screen);
+    if (idx === -1) idx = 0;
+    rail.innerHTML = STEPS.map((s,i)=>{
+      let cls='seg'; if(i<idx) cls+=' done'; if(i===idx) cls+=' active';
+      return `<div class="${cls}"></div>`;
+    }).join('');
+  }
+  document.getElementById('phaseLabel').textContent = PHASE[state.screen];
+}
+
+function renderDemoBar(){
+  const bar = document.getElementById('demoBar');
+  const passive = {
+    now1: 'Meanwhile, 18 minutes pass at the keyboard.',
+    onway: "Meanwhile, you're on the road.",
+    arrived: 'Later — the meeting wraps, the haircut starts, and runs long.',
+  };
+  const nextMap = { now1:'atrisk', onway:'arrived', arrived:'conflict' };
+  if (passive[state.screen]) {
+    bar.innerHTML = `<div class="demo-tag">DEMO — SIMULATES TIME PASSING</div>
+      <div class="demo-caption">${passive[state.screen]}</div>
+      <button class="demo-btn" onclick="go('${nextMap[state.screen]}')">Continue →</button>`;
+  } else { bar.innerHTML = ''; }
+}
+
+function render(){
+  const map = { plan:screenPlan, addActivity:screenAddActivity, structure:screenStructure, preview:screenPreview,
+    now1:screenNow1, atrisk:screenAtRisk, prepare:screenPrepare, leave:screenLeave,
+    onway:screenOnWay, arrived:screenArrived, conflict:screenConflict, complete:screenComplete,
+    insights:screenInsights, profile:screenProfile, captureDay:screenCaptureDay };
+  document.getElementById('screen').innerHTML = map[state.screen]();
+  renderChrome();
+  renderRail();
+  renderDemoBar();
+}
+
+render();
+</script>
+</body>
+</html>
