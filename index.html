@@ -549,15 +549,13 @@ function prepLeadMinutesFor(durationMinutes){
 /// seconds of the phone locking or the app leaving the foreground — this
 /// reliably fires only while the tab stays open and the screen stays on,
 /// without a real backend push server behind it.
-function scheduleRealNotifications(){
-  clearScheduledNotifications();
-  const nowMs = Date.now();
-  const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map() };
-  atRiskShownFor = new Set();
-  pendingConflict = null;
+/// Schedules notifications for whichever schedule items don't already have
+/// completion history — shared by both a fresh Start Day and a mid-day
+/// resync after editing activities.
+function scheduleNotificationsFor(schedule, nowMs){
   if (notifStatus !== 'granted') return;
   schedule.forEach((item, i) => {
+    if (liveDay.doneMeta.has(item.activity.id)) return;
     const anchorMs = effectiveStartMs(item);
     const durationMin = (item.endMs - item.startMs) / 60000;
     const leadMin = prepLeadMinutesFor(durationMin);
@@ -582,6 +580,32 @@ function scheduleRealNotifications(){
       item.timers.push(id);
     }
   });
+}
+
+/// A fresh Start Day: builds the schedule from scratch and clears any
+/// completion history from a previous day.
+function scheduleRealNotifications(){
+  clearScheduledNotifications();
+  const nowMs = Date.now();
+  const schedule = buildLiveSchedule(nowMs);
+  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map() };
+  atRiskShownFor = new Set();
+  pendingConflict = null;
+  scheduleNotificationsFor(schedule, nowMs);
+}
+
+/// Rebuilds the live schedule from the current activities list without
+/// losing progress — this is what makes adding, editing, or deleting an
+/// activity mid-day actually take effect immediately, instead of only
+/// applying the next time Start Day is pressed. Genuinely rerouting on
+/// change, the same way the rest of the app is meant to work.
+function syncLiveSchedule(){
+  if (!liveDay.startedAt) return; // day hasn't started yet — nothing to sync
+  clearScheduledNotifications();
+  const nowMs = Date.now();
+  const schedule = buildLiveSchedule(nowMs);
+  liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta };
+  scheduleNotificationsFor(schedule, nowMs);
 }
 
 /// Computes real end-of-day stats from what actually happened, not a
@@ -625,7 +649,6 @@ if ('serviceWorker' in navigator) {
   if (Notification && Notification.permission) notifStatus = Notification.permission;
 }
 
-loadFromStorage();
 const TYPE_COLOR = { focus:'var(--focus)', meeting:'var(--meeting)', prepare:'var(--prepare)', personal:'var(--personal)' };
 const TYPE_SOFT = { focus:'var(--focus-soft)', meeting:'var(--meeting-soft)', prepare:'var(--prepare-soft)', personal:'var(--personal-soft)' };
 const PRI_COLOR = { signal:'var(--focus)', next:'var(--meeting)', later:'var(--ink-faint)' };
@@ -678,29 +701,100 @@ function restart(){
 function selectStructure(s){ state.structure = s; render(); }
 function selectNewPriority(p){ newActPriority = p; render(); }
 
-function saveActivity(){
+/// Real geocoding + routing using free, public OpenStreetMap-based services
+/// (Nominatim for geocoding, OSRM for driving time) — no API key, no
+/// account, no credit card. Important honest caveat: these are public demo
+/// servers, meant for exactly this kind of testing, not for a real app
+/// with many simultaneous users — they can rate-limit or be unavailable,
+/// and there's no uptime guarantee. Real launch would mean a paid provider
+/// (Google/Apple/Mapbox) with an API key.
+function getCurrentPosition(){
+  return new Promise((resolve, reject) => {
+    if (!('geolocation' in navigator)) { reject(new Error('Geolocation not supported')); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      err => reject(err),
+      { timeout: 10000 }
+    );
+  });
+}
+async function geocodeLocation(query){
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  return parseGeocodeResponse(data);
+}
+function parseGeocodeResponse(data){
+  if (!data || !data[0]) return null;
+  const lat = parseFloat(data[0].lat), lng = parseFloat(data[0].lon);
+  if (isNaN(lat) || isNaN(lng)) return null;
+  return { lat, lng };
+}
+async function getDrivingMinutes(from, to){
+  const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=false`;
+  const res = await fetch(url);
+  const data = await res.json();
+  return parseRouteResponse(data);
+}
+function parseRouteResponse(data){
+  if (!data || !data.routes || !data.routes[0] || typeof data.routes[0].duration !== 'number') return null;
+  return Math.max(1, Math.round(data.routes[0].duration / 60));
+}
+/// Ties the three steps together: where am I, where's the destination,
+/// how long between them. Returns null on any failure so the caller can
+/// fall back gracefully instead of crashing the save flow.
+async function computeRealTravelMinutes(locationQuery){
+  const origin = await getCurrentPosition();
+  const dest = await geocodeLocation(locationQuery);
+  if (!dest) return null;
+  return await getDrivingMinutes(origin, dest);
+}
+
+async function saveActivity(){
   const title = document.getElementById('newActTitle').value.trim();
   const time = document.getElementById('newActTime').value.trim() || '—';
   const dur = document.getElementById('newActDur').value.trim() || '30 min';
   const location = document.getElementById('newActLocation').value.trim();
-  const travelMin = document.getElementById('newActTravel').value.trim();
+  let travelMin = document.getElementById('newActTravel').value.trim();
   if(!title){ toast('Give the activity a title first'); return; }
+
+  let travelNote = '';
+  if (location && !travelMin) {
+    toast('Finding real travel time…');
+    try {
+      const mins = await computeRealTravelMinutes(location);
+      if (mins != null) {
+        travelMin = String(mins);
+        travelNote = ` — ${mins} min real drive time`;
+      } else {
+        travelMin = '15';
+        travelNote = " — couldn't find that place, estimated 15 min";
+      }
+    } catch (e) {
+      travelMin = '15';
+      travelNote = ' — location access unavailable, estimated 15 min';
+    }
+  }
+
   const id = 'a' + Date.now() + Math.random().toString(36).slice(2,6);
   activities.push({ id, time, name:title, dur, priority:newActPriority, location, travelMin,
     type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
   newActPriority = 'signal';
   saveToStorage();
-  toast('Added to today');
+  syncLiveSchedule();
+  toast('Added to today' + travelNote);
   go('plan');
 }
 function deleteActivity(id){
   activities = activities.filter(a => a.id !== id);
   saveToStorage();
+  syncLiveSchedule();
   render();
 }
 function clearAllActivities(){
   activities = [];
   saveToStorage();
+  syncLiveSchedule();
   toast('Cleared — add your real tasks now');
   render();
 }
@@ -780,7 +874,7 @@ const VOICE_COMMANDS = [
   {text:'"Done."', response:"Marked as done — moving you to what's next."},
   {text:'"Skip this."', response:'Skipped. Recalculating the rest of your day.'},
   {text:'"Give me another 20 minutes."', response:'Added 20 minutes — checking what still fits.'},
-  {text:"\"What's next?\"", response:'Your next commitment is Client meeting at 14:00.'},
+  {text:"\"What's next?\"", response:"Depends what's actually on your list — check the Now screen for the real answer."},
 ];
 function toggleVoice(){ voiceOpen = !voiceOpen; renderVoicePanel(); }
 function runVoiceCommand(i){
@@ -891,8 +985,8 @@ function screenAddActivity(){
     <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">This has to be an actual time for Start Day's live countdown and real notifications to use it. Anything else (or left blank) just won't show up in the live test.</div>
     <div class="field"><label>Duration</label><input id="newActDur" type="text" placeholder="e.g. 45 min"></div>
     <div class="field"><label>Location (optional)</label><input id="newActLocation" type="text" placeholder="e.g. Meridian Client HQ, 4th Floor"></div>
-    <div class="field"><label>Travel time in minutes (optional)</label><input id="newActTravel" type="text" placeholder="e.g. 20"></div>
-    <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">If you fill these in, SIMA works out a real "leave by" time and gives you a genuine Navigate button that opens Maps to that address.</div>
+    <div class="field"><label>Travel time in minutes (optional)</label><input id="newActTravel" type="text" placeholder="Leave blank to look it up automatically"></div>
+    <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">Give it a Location and leave this blank, and SIMA will find your real driving time to that address (one location permission prompt) instead of guessing. Type a number here to skip that and set it yourself.</div>
   `;
 }
 
@@ -1187,9 +1281,9 @@ function screenProfile(){
 
     <div class="section-label">NOTIFICATIONS YOU'D GET</div>
     <div class="insight-card">
-      <div class="notif-row"><div class="txt"><span class="tag">PREPARE</span><br>Start preparing for Client meeting in 10 minutes.</div></div>
-      <div class="notif-row"><div class="txt"><span class="tag">LEAVE NOW</span><br>Leave in 5 minutes to make your 14:00.</div></div>
-      <div class="notif-row"><div class="txt"><span class="tag">AT RISK</span><br>Your next commitment is now at risk.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">LEAVE SOON</span><br>Sent before an activity with travel time, scaled to how long the drive is.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">STARTING SOON</span><br>Sent before a longer activity begins — skipped entirely for short ones.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">RUNNING BEHIND</span><br>Sent the moment something runs past its end time without being marked done.</div></div>
     </div>
   `;
 }
@@ -1249,22 +1343,36 @@ function renderDemoBar(){
   bar.innerHTML = '';
 }
 
+const SCREEN_MAP = { plan:screenPlan, addActivity:screenAddActivity, structure:screenStructure, preview:screenPreview,
+  now1:screenNow1, atrisk:screenAtRisk, conflict:screenConflict, complete:screenComplete,
+  insights:screenInsights, profile:screenProfile, captureDay:screenCaptureDay };
+
 function render(){
-  const map = { plan:screenPlan, addActivity:screenAddActivity, structure:screenStructure, preview:screenPreview,
-    now1:screenNow1, atrisk:screenAtRisk, conflict:screenConflict, complete:screenComplete,
-    insights:screenInsights, profile:screenProfile, captureDay:screenCaptureDay };
-  document.getElementById('screen').innerHTML = map[state.screen]();
+  document.getElementById('screen').innerHTML = SCREEN_MAP[state.screen]();
   renderChrome();
   renderRail();
   renderDemoBar();
 }
 
-// Keeps the live screens genuinely live — re-renders once a second while
-// one is on screen, so countdowns actually tick against the real clock.
+// The live countdown screens re-render every second, but only their own
+// content — not the top bar or tab bar, which never change on a tick. A
+// full render() every second was rebuilding all of that pointlessly and
+// is exactly the kind of thing that makes an app feel janky instead of
+// smooth.
+function renderScreenOnly(){
+  document.getElementById('screen').innerHTML = SCREEN_MAP[state.screen]();
+}
+
 setInterval(() => {
-  if (['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) render();
+  if (['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) renderScreenOnly();
 }, 1000);
 
+// Only safe to call now that every let/const it touches (activities,
+// capturedDays, vision) has actually been declared — calling this earlier
+// silently failed every time due to the temporal dead zone, meaning saved
+// data was never actually being restored on reload despite saveToStorage()
+// working fine within a session.
+loadFromStorage();
 render();
 </script>
 </body>
