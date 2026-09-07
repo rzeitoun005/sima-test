@@ -389,20 +389,54 @@ function clearScheduledNotifications(){
   scheduledTimers = [];
 }
 
+/// Sends a real notification immediately, so you can confirm the whole
+/// pipeline (hosting, permission, service worker) actually works — without
+/// waiting for a real countdown or having to keep the phone unlocked.
+function sendTestNotification(){
+  if (notifStatus !== 'granted') { toast('Enable notifications first'); return; }
+  fireNotification('SIMA test', "If you see this, real notifications are working on this device.");
+  toast('Test notification sent');
+}
+
+/// Tracks the live, real-clock state of "today" once Start Day is pressed.
+/// This is what the Now screen actually reads from — separate from the
+/// scripted display text used elsewhere in the demo.
+let liveDay = { startedAt: null, order: [], index: 0 };
+
+function liveDayCurrentEndsAt(){
+  if (!liveDay.startedAt || liveDay.index >= liveDay.order.length) return null;
+  let ms = liveDay.startedAt;
+  for (let i = 0; i <= liveDay.index; i++) {
+    ms += parseDurationToMinutes(liveDay.order[i].dur) * 60 * 1000;
+  }
+  return ms;
+}
+function liveDayMarkCurrentDone(){
+  if (liveDay.index < liveDay.order.length - 1) {
+    liveDay.index += 1;
+  } else {
+    liveDay.index = liveDay.order.length; // past the end = day's activities complete
+  }
+  render();
+}
+
 /// Schedules a real notification at the end of each activity, based on the
 /// actual system clock — not the fictional times shown elsewhere in the demo.
 /// This is what makes "Start Day" genuinely testable in real time: set short
-/// durations (e.g. "2 min") on your activities and background the browser.
+/// durations (e.g. "2 min") on your activities. Important limitation: iOS
+/// commonly suspends this timer within seconds of the phone locking or the
+/// app leaving the foreground — this reliably fires only while the tab
+/// stays open and the screen stays on, without a real backend push server.
 function scheduleRealNotifications(){
   clearScheduledNotifications();
+  liveDay = { startedAt: Date.now(), order: [...activities], index: 0 };
   if (notifStatus !== 'granted') return;
-  const ordered = [...activities].sort((a,b)=> 0); // keep entry order for the real-time test
   let cursorMs = Date.now();
-  ordered.forEach((act, i) => {
+  liveDay.order.forEach((act, i) => {
     const mins = parseDurationToMinutes(act.dur);
     cursorMs += mins * 60 * 1000;
     const delay = cursorMs - Date.now();
-    const next = ordered[i+1];
+    const next = liveDay.order[i+1];
     const id = setTimeout(() => {
       fireNotification(
         `Time's up: ${act.name}`,
@@ -482,6 +516,7 @@ function restart(){
   lastNavScreen = 'now1';
   captureSwatchIndex = 0;
   voiceOpen = false;
+  liveDay = { startedAt: null, order: [], index: 0 };
   saveToStorage();
   render();
 }
@@ -731,7 +766,8 @@ function screenPreview(){
       </div>` : `
       <div class="insight-card" style="margin-top:6px;">
         <div class="insight-label">REAL NOTIFICATIONS</div>
-        <div class="insight-body">✓ Enabled — Start Day will schedule real alerts against your actual clock.</div>
+        <div class="insight-body">✓ Enabled — Start Day will schedule real alerts against your actual clock. Keep this tab open and the screen on for the most reliable test — iOS often suspends this within seconds of the phone locking, since there's no backend push server behind it yet.</div>
+        <button class="btn-outline" style="margin-top:10px;" onclick="sendTestNotification()">Send a test notification now</button>
       </div>`}
     <div style="height:8px;"></div>
     <button class="btn-primary" style="box-shadow:0 10px 24px -8px rgba(73,84,240,0.45);" onclick="startDayLive()">Start Day</button>
@@ -744,21 +780,52 @@ function startDayLive(){
   go('now1');
 }
 
+function formatMMSS(ms){
+  const total = Math.max(0, Math.round(ms/1000));
+  const m = Math.floor(total/60);
+  const s = total%60;
+  return `${m}:${s.toString().padStart(2,'0')}`;
+}
+
 function screenNow1(){
+  // This screen is genuinely live: it reads liveDay (set when Start Day is
+  // pressed) rather than any scripted/demo text. A ticking interval elsewhere
+  // re-renders this screen once a second while it's on-screen.
+  if (!liveDay.startedAt || liveDay.order.length === 0) {
+    return `<div class="subtitle" style="margin-top:20px;">Nothing scheduled — go back and add an activity, then press Start Day.</div>`;
+  }
+  if (liveDay.index >= liveDay.order.length) {
+    return `
+      <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ALL DONE</div>
+      <div class="now-card" style="margin-top:12px;">
+        <div class="now-name">That's everything on today's list.</div>
+      </div>
+      <button class="btn-primary" style="margin-top:14px;" onclick="go('complete')">Finish the day</button>
+    `;
+  }
+  const current = liveDay.order[liveDay.index];
+  const next = liveDay.order[liveDay.index + 1];
+  const endsAt = liveDayCurrentEndsAt();
+  const remainingMs = endsAt - Date.now();
+  const totalMs = parseDurationToMinutes(current.dur) * 60 * 1000;
+  const pct = Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
+  const overdue = remainingMs <= 0;
+
   return `
     ${heroMap()}
-    <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ON TRACK</div>
+    <div class="status-pill ${overdue?'risk':'ontrack'}"><div class="pdot" style="background:${overdue?'var(--risk)':'var(--ontrack)'}"></div>${overdue?"TIME'S UP":'ON TRACK'}</div>
     <div class="now-card" style="margin-top:12px;">
       <div class="now-top">
-        <div><div class="now-name">Finish SIMA pitch</div><div class="now-sub">Finish by 13:20</div></div>
-        ${ring(72, 'var(--focus)', 68, '18', 'min left')}
+        <div><div class="now-name">${current.name}</div><div class="now-sub">${overdue ? "This was due — mark it done to move on" : 'Live countdown, real clock'}</div></div>
+        ${ring(pct, overdue?'var(--risk)':'var(--focus)', 68, overdue?'0:00':formatMMSS(remainingMs), overdue?'overdue':'left')}
       </div>
     </div>
+    ${next ? `
     <div class="up-next-card">
       <div class="up-next-label">UP NEXT</div>
-      <div class="up-next-row"><div class="up-next-name">Client meeting</div><div class="up-next-time">14:00</div></div>
-      <div class="action-chip" onclick="toast('Opens the meeting link')">Join meeting</div>
-    </div>
+      <div class="up-next-row"><div class="up-next-name">${next.name}</div><div class="up-next-time">${next.dur}</div></div>
+    </div>` : ''}
+    <button class="btn-primary" style="margin-top:14px;" onclick="liveDayMarkCurrentDone()">Mark done, continue</button>
   `;
 }
 
@@ -1053,6 +1120,12 @@ function render(){
   renderRail();
   renderDemoBar();
 }
+
+// Keeps the Now screen genuinely live — re-renders once a second while
+// it's on screen, so the countdown actually ticks against the real clock.
+setInterval(() => {
+  if (state.screen === 'now1' && liveDay.startedAt) render();
+}, 1000);
 
 render();
 </script>
