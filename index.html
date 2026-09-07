@@ -313,8 +313,13 @@
 </div>
 
 <script>
+// Bumped every time a real update ships — check this on the Plan screen
+// against what I tell you in chat to confirm you're on the current version
+// before troubleshooting anything else.
+const APP_VERSION = 'v11 · short-trip city traffic buffer';
+
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
-const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN',
+const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
   now1:'NAVIGATE', atrisk:'NAVIGATE', conflict:'NAVIGATE',
   complete:'REFLECT', insights:'INSIGHTS', profile:'PROFILE', captureDay:'PROFILE' };
 const VISION_AXES = [
@@ -740,7 +745,19 @@ async function getDrivingMinutes(from, to){
   const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=false`;
   const res = await fetch(url);
   const data = await res.json();
-  return parseRouteResponse(data);
+  const raw = parseRouteResponse(data);
+  return raw == null ? null : applyCityTrafficBuffer(raw);
+}
+/// OSRM has no traffic data — it computes the fastest theoretical route
+/// from road speed limits alone, no lights, no stop-and-go, no congestion.
+/// That gap is worst on short city trips, where traffic lights and
+/// intersections eat up a large share of a 3-5 minute drive but barely
+/// register on a 30-minute one. This adds a flat few-minute buffer only
+/// to short estimates, rather than a blanket multiplier that would just
+/// as easily distort longer highway routes in the other direction.
+function applyCityTrafficBuffer(rawMinutes){
+  if (rawMinutes < 10) return rawMinutes + 3;
+  return rawMinutes;
 }
 function parseRouteResponse(data){
   if (!data || !data.routes || !data.routes[0] || typeof data.routes[0].duration !== 'number') return null;
@@ -756,6 +773,53 @@ async function computeRealTravelMinutes(locationQuery){
   return await getDrivingMinutes(origin, dest);
 }
 
+/// Straight-line distance in km between two lat/lng points (haversine).
+function haversineKm(a, b){
+  const R = 6371;
+  const dLat = (b.lat - a.lat) * Math.PI/180;
+  const dLng = (b.lng - a.lng) * Math.PI/180;
+  const lat1 = a.lat * Math.PI/180, lat2 = b.lat * Math.PI/180;
+  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+/// Walking time estimate at an average pace. This is NOT a routed path —
+/// the free service driving this app only offers driving routes, so
+/// walking is a straight-line distance / average speed estimate, and is
+/// labeled as such everywhere it's shown. It'll run short on routes with
+/// detours, water crossings, highways with no footpath, etc.
+function estimateWalkMinutes(km){
+  const walkingKmPerHour = 4.8;
+  return Math.max(1, Math.round((km / walkingKmPerHour) * 60));
+}
+
+/// Computes both a real driving time and an estimated walking time so the
+/// person can compare and choose, rather than the app silently picking one.
+async function computeTravelOptions(locationQuery){
+  const origin = await getCurrentPosition();
+  const dest = await geocodeLocation(locationQuery);
+  if (!dest) return null;
+  let car = null;
+  try { car = await getDrivingMinutes(origin, dest); } catch(e) { car = null; }
+  const walk = estimateWalkMinutes(haversineKm(origin, dest));
+  if (car == null && walk == null) return null;
+  return { car, walk };
+}
+
+let pendingNewActivity = null;
+
+function activityTypeFor(priority){
+  return priority==='signal' ? 'focus' : priority==='next' ? 'meeting' : 'personal';
+}
+function pushFinishedActivity(fields, travelMin){
+  const id = 'a' + Date.now() + Math.random().toString(36).slice(2,6);
+  activities.push({ id, time: fields.time, name: fields.title, dur: fields.dur,
+    priority: newActPriority, location: fields.location, travelMin,
+    type: activityTypeFor(newActPriority) });
+  newActPriority = 'signal';
+  saveToStorage();
+  syncLiveSchedule();
+}
+
 async function saveActivity(){
   const title = document.getElementById('newActTitle').value.trim();
   const time = document.getElementById('newActTime').value.trim() || '—';
@@ -764,33 +828,44 @@ async function saveActivity(){
   let travelMin = document.getElementById('newActTravel').value.trim();
   if(!title){ toast('Give the activity a title first'); return; }
 
-  let travelNote = '';
+  const fields = { title, time, dur, location };
+
   if (location && !travelMin) {
-    toast('Finding real travel time…');
-    try {
-      const mins = await computeRealTravelMinutes(location);
-      if (mins != null) {
-        travelMin = String(mins);
-        travelNote = ` — ${mins} min real drive time`;
-      } else {
-        travelMin = '15';
-        travelNote = " — couldn't find that place, estimated 15 min";
-      }
-    } catch (e) {
-      travelMin = '15';
-      travelNote = ' — location access unavailable, estimated 15 min';
+    toast('Finding travel options…');
+    let options = null;
+    try { options = await computeTravelOptions(location); }
+    catch (e) { options = null; }
+
+    if (options) {
+      // Genuine choice, not the app silently picking one — hand off to a
+      // real decision screen showing both.
+      pendingNewActivity = { fields, options };
+      go('chooseTravelMode');
+      return;
+    } else {
+      pushFinishedActivity(fields, '15');
+      toast("Added to today — couldn't find travel options, estimated 15 min");
+      go('plan');
+      return;
     }
   }
 
-  const id = 'a' + Date.now() + Math.random().toString(36).slice(2,6);
-  activities.push({ id, time, name:title, dur, priority:newActPriority, location, travelMin,
-    type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
-  newActPriority = 'signal';
-  saveToStorage();
-  syncLiveSchedule();
-  toast('Added to today' + travelNote);
+  pushFinishedActivity(fields, travelMin);
+  toast('Added to today');
   go('plan');
 }
+
+function finalizeTravelChoice(mode){
+  if (!pendingNewActivity) { go('plan'); return; }
+  const { fields, options } = pendingNewActivity;
+  const minutes = mode === 'drive' ? options.car : options.walk;
+  pendingNewActivity = null;
+  if (minutes == null) { toast('That option turned out unavailable'); go('addActivity'); return; }
+  pushFinishedActivity(fields, String(minutes));
+  toast(`Added to today — ${mode === 'drive' ? 'driving' : 'walking'}, ${minutes} min`);
+  go('plan');
+}
+
 function deleteActivity(id){
   activities = activities.filter(a => a.id !== id);
   saveToStorage();
@@ -910,6 +985,8 @@ function renderChrome(){
     bar.innerHTML = `<div class="side"></div><div class="title">Day complete</div><div class="side right"></div>`;
   } else if (s === 'addActivity'){
     bar.innerHTML = `<div class="side textbtn" onclick="go('plan')" style="width:auto;">Cancel</div><div class="title">Add activity</div><div class="side right textbtn accent" style="width:auto;" onclick="saveActivity()">Save</div>`;
+  } else if (s === 'chooseTravelMode'){
+    bar.innerHTML = `<div class="side textbtn" onclick="pendingNewActivity=null; go('plan')" style="width:auto;">Cancel</div><div class="title">Choose travel</div><div class="side right"></div>`;
   } else if (s === 'insights'){
     bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">Insights</div><div class="side right"></div>`;
   } else if (s === 'profile'){
@@ -970,6 +1047,7 @@ function screenPlan(){
     <div class="add-row" onclick="go('addActivity')">+ Add activity</div>
     <div style="height:8px;"></div>
     <button class="btn-primary" onclick="go('structure')">Choose structure</button>
+    <div style="text-align:center;font-size:10px;color:var(--ink-faint);margin-top:16px;">${APP_VERSION}</div>
   `;
 }
 
@@ -993,6 +1071,28 @@ function screenAddActivity(){
     <div class="field"><label>Location (optional)</label><input id="newActLocation" type="text" placeholder="e.g. Meridian Client HQ, 4th Floor"></div>
     <div class="field"><label>Travel time in minutes (optional)</label><input id="newActTravel" type="text" placeholder="Leave blank to look it up automatically"></div>
     <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">Give it a Location and leave this blank, and SIMA will find your real driving time to that address (one location permission prompt) instead of guessing. Type a number here to skip that and set it yourself.</div>
+  `;
+}
+
+function screenChooseTravelMode(){
+  if (!pendingNewActivity) {
+    return `<div class="subtitle" style="margin-top:20px;">Nothing to choose right now.</div>`;
+  }
+  const { fields, options } = pendingNewActivity;
+  return `
+    <div class="title-lg" style="margin-top:0;">How are you getting there?</div>
+    <div class="subtitle" style="margin-bottom:14px;">${fields.location}</div>
+    ${options.car != null ? `
+    <div class="choice-card" onclick="finalizeTravelChoice('drive')">
+      <div><div class="choice-title">Drive — ${options.car} min</div><div class="choice-sub">Real route, with a small buffer added for city traffic on short trips. No live traffic data, so treat it as approximate.</div></div>
+      <div class="icon-btn">${I.chev}</div>
+    </div>` : `
+    <div class="insight-card"><div class="insight-body">Driving time wasn't available for this address.</div></div>`}
+    ${options.walk != null ? `
+    <div class="choice-card" onclick="finalizeTravelChoice('walk')">
+      <div><div class="choice-title">Walk — ${options.walk} min</div><div class="choice-sub">Estimated straight-line distance, not a real routed path.</div></div>
+      <div class="icon-btn">${I.chev}</div>
+    </div>` : ''}
   `;
 }
 
@@ -1328,7 +1428,7 @@ function saveCapture(){
 /* ---------- render ---------- */
 function renderRail(){
   const rail = document.getElementById('rail');
-  const inLoop = STEPS.includes(state.screen) || state.screen === 'addActivity';
+  const inLoop = STEPS.includes(state.screen) || state.screen === 'addActivity' || state.screen === 'chooseTravelMode';
   if (!inLoop) {
     rail.style.display = 'none';
   } else {
@@ -1351,7 +1451,7 @@ function renderDemoBar(){
   bar.innerHTML = '';
 }
 
-const SCREEN_MAP = { plan:screenPlan, addActivity:screenAddActivity, structure:screenStructure, preview:screenPreview,
+const SCREEN_MAP = { plan:screenPlan, addActivity:screenAddActivity, chooseTravelMode:screenChooseTravelMode, structure:screenStructure, preview:screenPreview,
   now1:screenNow1, atrisk:screenAtRisk, conflict:screenConflict, complete:screenComplete,
   insights:screenInsights, profile:screenProfile, captureDay:screenCaptureDay };
 
