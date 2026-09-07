@@ -313,9 +313,9 @@
 </div>
 
 <script>
-const STEPS = ['plan','structure','preview','now1','atrisk','prepare','leave','onway','arrived','conflict','complete'];
+const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN',
-  now1:'NAVIGATE', atrisk:'NAVIGATE', prepare:'NAVIGATE', leave:'NAVIGATE', onway:'NAVIGATE', arrived:'NAVIGATE', conflict:'NAVIGATE',
+  now1:'NAVIGATE', atrisk:'NAVIGATE', conflict:'NAVIGATE',
   complete:'REFLECT', insights:'INSIGHTS', profile:'PROFILE', captureDay:'PROFILE' };
 const VISION_AXES = [
   {key:'achievement', label:'Achievement'},
@@ -423,7 +423,9 @@ function clockTimeToMsToday(clock, referenceMs){
 /// time) plus its Duration — this is what the Now screen reads from.
 /// Activities without a real, parseable time are excluded from live
 /// tracking, since there's nothing real to anchor them to.
-let liveDay = { startedAt: null, schedule: [], doneIds: new Set() };
+let liveDay = { startedAt: null, schedule: [], doneMeta: new Map() };
+let atRiskShownFor = new Set();
+let pendingConflict = null; // set when marking done reveals we're already late for what's next
 
 function buildLiveSchedule(nowMs){
   const items = [];
@@ -432,37 +434,96 @@ function buildLiveSchedule(nowMs){
     if (!clock) return;
     const startMs = clockTimeToMsToday(clock, nowMs);
     const endMs = startMs + parseDurationToMinutes(a.dur) * 60 * 1000;
-    items.push({ activity: a, startMs, endMs, timers: [] });
+    const travelMin = a.travelMin ? parseInt(a.travelMin, 10) : 0;
+    const leaveByMs = (travelMin > 0) ? (startMs - travelMin*60*1000) : null;
+    items.push({ activity: a, startMs, endMs, leaveByMs, timers: [] });
   });
   items.sort((x,y) => x.startMs - y.startMs);
   return items;
 }
 
-/// "Current" is the earliest activity that has started and hasn't been
-/// marked done — deliberately independent of whether its window has
-/// technically ended. This is what lets the status genuinely go AT RISK
-/// and stay that way, instead of silently jumping to "next" the moment
-/// the clock passes the end time. The person decides when they're done,
-/// not the clock — same rule the rest of the app follows.
+/// The moment an item becomes relevant: if it needs travel time, that's
+/// when you'd need to leave; otherwise it's just the start time itself.
+function effectiveStartMs(item){
+  return item.leaveByMs != null ? item.leaveByMs : item.startMs;
+}
+
+/// "Current" is the earliest activity that has reached its effective start
+/// and hasn't been marked done — deliberately independent of whether its
+/// window has technically ended. This is what lets the status genuinely go
+/// AT RISK and stay that way, instead of silently jumping to "next" the
+/// moment the clock passes the end time. The person decides when they're
+/// done, not the clock — same rule the rest of the app follows.
 function liveDayCurrentItem(nowMs){
-  const started = liveDay.schedule.filter(it => it.startMs <= nowMs && !liveDay.doneIds.has(it.activity.id));
+  const started = liveDay.schedule.filter(it => effectiveStartMs(it) <= nowMs && !liveDay.doneMeta.has(it.activity.id));
   if (started.length === 0) return null;
-  started.sort((a,b) => a.startMs - b.startMs);
+  started.sort((a,b) => effectiveStartMs(a) - effectiveStartMs(b));
   return started[0];
 }
 function liveDayNextItem(nowMs){
-  const upcoming = liveDay.schedule.filter(it => it.startMs > nowMs && !liveDay.doneIds.has(it.activity.id));
-  return upcoming.length ? upcoming.sort((a,b)=>a.startMs-b.startMs)[0] : null;
+  const upcoming = liveDay.schedule.filter(it => effectiveStartMs(it) > nowMs && !liveDay.doneMeta.has(it.activity.id));
+  return upcoming.length ? upcoming.sort((a,b)=>effectiveStartMs(a)-effectiveStartMs(b))[0] : null;
 }
+/// Which stage a "current" item is in: still time to leave, or actually
+/// underway.
+function stageFor(item, nowMs){
+  if (item.leaveByMs != null && nowMs < item.startMs) return 'leave';
+  return 'doing';
+}
+
 function liveDayMarkCurrentDone(){
   const nowMs = Date.now();
   const current = liveDayCurrentItem(nowMs);
-  if (current) {
-    liveDay.doneIds.add(current.activity.id);
-    current.timers.forEach(id => clearTimeout(id)); // cancel its now-stale "running late" alert
-    current.timers = [];
+  if (!current) { render(); return; }
+  liveDay.doneMeta.set(current.activity.id, { doneAt: nowMs, skipped: false });
+  current.timers.forEach(id => clearTimeout(id));
+  current.timers = [];
+
+  // Check whether finishing this just revealed we're already late for
+  // whatever comes next — real conflict detection, not a scripted one.
+  // "Next" here means whichever item would become current now, whether it
+  // was strictly upcoming or had already quietly started while we were
+  // busy with the previous thing.
+  const upNext = liveDayCurrentItem(nowMs) || liveDayNextItem(nowMs);
+  if (upNext && nowMs > upNext.startMs + 2*60*1000) {
+    pendingConflict = upNext;
+    go('conflict');
+    return;
   }
   render();
+}
+
+/// Extends the current item's window when someone chooses "give it more
+/// time" from the At Risk screen, and reschedules a fresh "running behind"
+/// alert against the new end time.
+function extendCurrent(minutes){
+  const nowMs = Date.now();
+  const current = liveDayCurrentItem(nowMs);
+  if (!current) { go('now1'); return; }
+  current.endMs += minutes*60*1000;
+  if (notifStatus === 'granted') {
+    const next = liveDay.schedule[liveDay.schedule.indexOf(current)+1];
+    const id = setTimeout(() => fireNotification(
+      `Running behind: ${current.activity.name}`,
+      next ? `Still going? ${next.activity.name} is coming up.` : "Mark it done when you wrap up."
+    ), current.endMs - Date.now());
+    scheduledTimers.push(id);
+    current.timers.push(id);
+  }
+  go('now1');
+}
+
+/// Resolves a real conflict: either the upcoming item gets skipped
+/// entirely, or accepted as running late (it simply becomes "current" on
+/// the next render, since its effective start has already passed).
+function resolveConflict(choice){
+  if (pendingConflict) {
+    if (choice === 'skip') {
+      liveDay.doneMeta.set(pendingConflict.activity.id, { doneAt: Date.now(), skipped: true });
+    }
+    pendingConflict = null;
+  }
+  go('now1');
 }
 
 /// How much lead time a "starting soon" heads-up gets, scaled to the size
@@ -477,13 +538,14 @@ function prepLeadMinutesFor(durationMinutes){
 }
 
 /// Schedules real notifications against each activity's actual clock time.
-/// Deliberately just two per activity, not three: a size-scaled "starting
-/// soon" heads-up (skipped for short activities), and a "running behind"
+/// For activities with travel time, the heads-up fires before the LEAVE-BY
+/// moment (not the start), since that's the real deadline. Deliberately
+/// just two alerts per activity: the heads-up, and a "running behind"
 /// alert if its window ends and it still hasn't been marked done — that
 /// second one is the actual AT RISK signal, not a generic timer. There's
-/// no separate "start now" ping; the persistent status card is what covers
-/// that moment, the same way Maps doesn't beep at every turn — it just
-/// shows it. Important limitation: iOS commonly suspends this timer within
+/// no separate "start now" ping; the persistent status card covers that
+/// moment, the same way Maps doesn't beep at every turn — it just shows
+/// it. Important limitation: iOS commonly suspends this timer within
 /// seconds of the phone locking or the app leaving the foreground — this
 /// reliably fires only while the tab stays open and the screen stays on,
 /// without a real backend push server behind it.
@@ -491,15 +553,20 @@ function scheduleRealNotifications(){
   clearScheduledNotifications();
   const nowMs = Date.now();
   const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: nowMs, schedule, doneIds: new Set() };
+  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map() };
+  atRiskShownFor = new Set();
+  pendingConflict = null;
   if (notifStatus !== 'granted') return;
   schedule.forEach((item, i) => {
+    const anchorMs = effectiveStartMs(item);
     const durationMin = (item.endMs - item.startMs) / 60000;
     const leadMin = prepLeadMinutesFor(durationMin);
     if (leadMin > 0) {
-      const prepDelay = item.startMs - nowMs - (leadMin*60*1000);
+      const prepDelay = anchorMs - nowMs - (leadMin*60*1000);
       if (prepDelay > 0) {
-        const id = setTimeout(() => fireNotification(`Starting soon: ${item.activity.name}`, `Starts in ${leadMin} min, at ${item.activity.time}`), prepDelay);
+        const label = item.leaveByMs != null ? `Leave soon: ${item.activity.name}` : `Starting soon: ${item.activity.name}`;
+        const body = item.leaveByMs != null ? `Leave in ${leadMin} min to make it on time` : `Starts in ${leadMin} min, at ${item.activity.time}`;
+        const id = setTimeout(() => fireNotification(label, body), prepDelay);
         scheduledTimers.push(id);
         item.timers.push(id);
       }
@@ -515,6 +582,23 @@ function scheduleRealNotifications(){
       item.timers.push(id);
     }
   });
+}
+
+/// Computes real end-of-day stats from what actually happened, not a
+/// scripted outcome.
+function computeDayStats(){
+  const total = liveDay.schedule.length;
+  let onTime = 0, late = 0, skipped = 0, executedMs = 0;
+  liveDay.schedule.forEach(it => {
+    const meta = liveDay.doneMeta.get(it.activity.id);
+    if (!meta) return;
+    if (meta.skipped) { skipped++; return; }
+    executedMs += Math.max(0, meta.doneAt - it.startMs);
+    if (meta.doneAt <= it.endMs) onTime++; else late++;
+  });
+  const finished = onTime + late;
+  const onTimePct = finished > 0 ? Math.round((onTime/finished)*100) : 100;
+  return { total, onTime, late, skipped, finished, onTimePct, executedMs };
 }
 
 async function requestNotifications(){
@@ -556,8 +640,7 @@ let activities = [
 let newActPriority = 'signal';
 let lastNavScreen = 'now1';
 
-let state = { screen:'plan', structure:null, riskChoice:null, conflictChoice:null,
-  checks:{laptop:false, deck:false, contract:false} };
+let state = { screen:'plan', structure:null };
 
 function toast(msg){
   let t = document.createElement('div');
@@ -582,15 +665,16 @@ function restart(){
     {id:'s4', time:'17:00', name:'Haircut', dur:'45m', priority:'later', type:'personal'},
     {id:'s5', time:'20:00', name:'Dinner with Sarah', dur:'1h 30m', priority:'signal', type:'meeting'},
   ];
-  state = { screen:'plan', structure:null, riskChoice:null, conflictChoice:null, checks:{laptop:false,deck:false,contract:false} };
+  state = { screen:'plan', structure:null };
   lastNavScreen = 'now1';
   captureSwatchIndex = 0;
   voiceOpen = false;
-  liveDay = { startedAt: null, schedule: [], doneIds: new Set() };
+  liveDay = { startedAt: null, schedule: [], doneMeta: new Map() };
+  atRiskShownFor = new Set();
+  pendingConflict = null;
   saveToStorage();
   render();
 }
-function toggleCheck(key){ state.checks[key] = !state.checks[key]; render(); }
 function selectStructure(s){ state.structure = s; render(); }
 function selectNewPriority(p){ newActPriority = p; render(); }
 
@@ -598,9 +682,12 @@ function saveActivity(){
   const title = document.getElementById('newActTitle').value.trim();
   const time = document.getElementById('newActTime').value.trim() || '—';
   const dur = document.getElementById('newActDur').value.trim() || '30 min';
+  const location = document.getElementById('newActLocation').value.trim();
+  const travelMin = document.getElementById('newActTravel').value.trim();
   if(!title){ toast('Give the activity a title first'); return; }
   const id = 'a' + Date.now() + Math.random().toString(36).slice(2,6);
-  activities.push({ id, time, name:title, dur, priority:newActPriority, type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
+  activities.push({ id, time, name:title, dur, priority:newActPriority, location, travelMin,
+    type: newActPriority==='signal' ? 'focus' : newActPriority==='next' ? 'meeting' : 'personal' });
   newActPriority = 'signal';
   saveToStorage();
   toast('Added to today');
@@ -717,7 +804,7 @@ function renderChrome(){
     bar.innerHTML = `<div class="side">${I.menu}</div><div class="brand">SIMA</div><div class="side right icon-btn" onclick="toast('No new notifications')">${I.bell}</div>`;
   } else if (s === 'now1' || s === 'atrisk'){
     bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">Day</div><div class="side right icon-btn" onclick="toast('Settings coming later')">${I.sliders}</div>`;
-  } else if (['prepare','leave','onway','arrived','conflict'].includes(s)){
+  } else if (['conflict'].includes(s)){
     bar.innerHTML = `<div class="side icon-btn" onclick="toast('You can\\'t rewind a day in progress')">${I.back}</div><div class="title">${titleFor(s)}</div><div class="side right icon-btn" onclick="toast('Nothing here yet')">${I.more}</div>`;
   } else if (s === 'complete'){
     bar.innerHTML = `<div class="side"></div><div class="title">Day complete</div><div class="side right"></div>`;
@@ -756,8 +843,7 @@ function goDay(){
   go(lastNavScreen);
 }
 function titleFor(s){
-  return { structure:'Choose structure', preview:'Preview day', prepare:'Prepare', leave:'Leave now',
-    onway:'On the way', arrived:'Arrived', conflict:'Schedule conflict' }[s] || '';
+  return { structure:'Choose structure', preview:'Preview day', conflict:'Schedule conflict' }[s] || '';
 }
 
 /* ---------- screens ---------- */
@@ -804,7 +890,9 @@ function screenAddActivity(){
     <div class="field"><label>Time — a real clock time, e.g. 2:05 PM or 14:05</label><input id="newActTime" type="text" placeholder="e.g. 2:05 PM"></div>
     <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">This has to be an actual time for Start Day's live countdown and real notifications to use it. Anything else (or left blank) just won't show up in the live test.</div>
     <div class="field"><label>Duration</label><input id="newActDur" type="text" placeholder="e.g. 45 min"></div>
-    <div class="field"><label>Preparation notes (optional)</label><textarea rows="2" placeholder="Anything to bring or review"></textarea></div>
+    <div class="field"><label>Location (optional)</label><input id="newActLocation" type="text" placeholder="e.g. Meridian Client HQ, 4th Floor"></div>
+    <div class="field"><label>Travel time in minutes (optional)</label><input id="newActTravel" type="text" placeholder="e.g. 20"></div>
+    <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">If you fill these in, SIMA works out a real "leave by" time and gives you a genuine Navigate button that opens Maps to that address.</div>
   `;
 }
 
@@ -885,12 +973,12 @@ function screenNow1(){
 
   if (!current) {
     if (next) {
-      const untilStart = next.startMs - nowMs;
+      const untilStart = effectiveStartMs(next) - nowMs;
       return `
         <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>UPCOMING</div>
         <div class="now-card" style="margin-top:12px;">
           <div class="now-name">${next.activity.name}</div>
-          <div class="now-sub">Starts at ${next.activity.time} · in ${formatMMSS(untilStart)}</div>
+          <div class="now-sub">${next.leaveByMs != null ? `Leave by ${new Date(next.leaveByMs).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}` : `Starts at ${next.activity.time}`} · in ${formatMMSS(untilStart)}</div>
         </div>
       `;
     }
@@ -901,10 +989,38 @@ function screenNow1(){
     `;
   }
 
+  const stage = stageFor(current, nowMs);
+
+  if (stage === 'leave') {
+    const untilStart = current.startMs - nowMs;
+    const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(current.activity.location || current.activity.name);
+    return `
+      <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>LEAVE NOW</div>
+      <div class="now-card" style="margin-top:12px;">
+        <div class="now-top">
+          <div><div class="now-name">${current.activity.name}</div><div class="now-sub">${current.activity.location || ''}</div></div>
+          ${ring(0, 'var(--focus)', 68, formatMMSS(untilStart), 'to start')}
+        </div>
+      </div>
+      <a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Navigate</a>
+      ${next ? `
+      <div class="up-next-card" style="margin-top:10px;">
+        <div class="up-next-label">THEN</div>
+        <div class="up-next-row"><div class="up-next-name">${next.activity.name}</div><div class="up-next-time">${next.activity.time}</div></div>
+      </div>` : ''}
+    `;
+  }
+
   const overdue = nowMs > current.endMs;
   const totalMs = current.endMs - current.startMs;
   const remainingMs = overdue ? (nowMs - current.endMs) : (current.endMs - nowMs);
   const pct = overdue ? 0 : Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
+
+  // First moment this item goes overdue: interrupt with the real At Risk screen once.
+  if (overdue && !atRiskShownFor.has(current.activity.id) && state.screen === 'now1') {
+    atRiskShownFor.add(current.activity.id);
+    setTimeout(() => go('atrisk'), 0);
+  }
 
   return `
     ${heroMap()}
@@ -925,135 +1041,70 @@ function screenNow1(){
 }
 
 function screenAtRisk(){
+  const nowMs = Date.now();
+  const current = liveDayCurrentItem(nowMs);
+  if (!current || nowMs <= current.endMs) {
+    // Nothing actually overdue right now — shouldn't normally happen, but
+    // fail safe back to the live screen instead of showing stale content.
+    setTimeout(() => go('now1'), 0);
+    return `<div class="subtitle" style="margin-top:20px;">Nothing at risk right now.</div>`;
+  }
+  const overdueMs = nowMs - current.endMs;
+  const next = liveDayNextItem(nowMs);
   return `
     <div class="alert-card">
       <div class="alert-top">${I.warn}
-        <div><div class="alert-title">You're at risk of being late</div>
-        <div class="alert-sub">Keep going another 8 minutes and you'll arrive late to your 14:00 with the client.</div></div>
+        <div><div class="alert-title">Running ${formatMMSS(overdueMs)} behind</div>
+        <div class="alert-sub">"${current.activity.name}" was supposed to end at ${new Date(current.endMs).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}.${next ? ` ${next.activity.name} is next.` : ''}</div></div>
       </div>
     </div>
-    <div class="choice-card" onclick="state.riskChoice='wrap'; go('prepare')">
-      <div><div class="choice-title">Wrap up now</div><div class="choice-sub">Stop at a clean point — you'll leave with a comfortable buffer.</div></div>
+    <div class="choice-card" onclick="liveDayMarkCurrentDone(); ">
+      <div><div class="choice-title">Wrap up now</div><div class="choice-sub">Mark it done and see what's next.</div></div>
       <div class="icon-btn">${I.chev}</div>
     </div>
-    <div class="choice-card" onclick="state.riskChoice='push'; go('prepare')">
-      <div><div class="choice-title">Push through 8 more minutes</div><div class="choice-sub">Still doable, but the buffer drops to almost nothing.</div></div>
+    <div class="choice-card" onclick="extendCurrent(10)">
+      <div><div class="choice-title">Give it 10 more minutes</div><div class="choice-sub">Push the deadline back and keep going.</div></div>
       <div class="icon-btn">${I.chev}</div>
-    </div>
-  `;
-}
-
-function screenPrepare(){
-  const tight = state.riskChoice === 'push';
-  const items = [ {k:'laptop', label:'Laptop'}, {k:'deck', label:'Pitch deck, printed'}, {k:'contract', label:'Signed contract draft'} ];
-  return `
-    <div class="section-label">CURRENT</div>
-    <div class="up-next-card" style="margin-bottom:14px;">
-      <div class="up-next-row"><div class="up-next-name">Finish SIMA pitch</div><div class="up-next-time">${tight?'0':'8'} min remaining</div></div>
-    </div>
-    <div class="checklist">
-      <div class="cl-label">PREPARE NOW</div>
-      ${items.map(it=>`
-        <div class="check-row" onclick="toggleCheck('${it.k}')">
-          <div class="check-box ${state.checks[it.k]?'on':''}">${state.checks[it.k]?I.check:''}</div>
-          <div class="check-label ${state.checks[it.k]?'on':''}">${it.label}</div>
-        </div>`).join('')}
-    </div>
-    <div class="now-card" style="display:flex;align-items:center;justify-content:space-between;">
-      <div><div class="now-sub" style="font-weight:800;color:var(--ink);font-size:13.5px;">Leave in</div>
-      <div class="now-sub">${tight? 'Buffer down to 4 min' : 'Client meeting in 40 min'}</div></div>
-      ${ring(tight?25:65, tight?'var(--tight)':'var(--focus)', 60, tight?'8':'18', 'min')}
-    </div>
-    <div style="height:2px;"></div>
-    <button class="btn-primary" style="margin-top:14px;" onclick="go('leave')">Continue to leave</button>
-  `;
-}
-
-function screenLeave(){
-  const tight = state.riskChoice === 'push';
-  return `
-    <div class="section-label">DESTINATION</div>
-    <div class="title-lg" style="margin-top:0;">Meridian Client HQ</div>
-    <div class="subtitle" style="margin-bottom:16px;">4th Floor, Reception</div>
-    <div class="stat-strip">
-      <div class="stat-chip"><div class="num">22 min</div><div class="lab">DRIVE</div></div>
-      <div class="stat-chip"><div class="num">${tight?'13:58':'13:52'}</div><div class="lab">ARRIVAL</div></div>
-      <div class="stat-chip"><div class="num">${tight?'2 min':'8 min'}</div><div class="lab">BUFFER</div></div>
-    </div>
-    <div class="route-card">
-      <svg viewBox="0 0 280 70"><path d="M10 55 Q 90 10 150 30 T 270 15" stroke="#4954F0" stroke-width="2.5" fill="none" stroke-linecap="round"/><circle cx="10" cy="55" r="5" fill="#13151C"/><circle cx="270" cy="15" r="6" fill="#4954F0" stroke="#fff" stroke-width="2"/></svg>
-    </div>
-    <button class="btn-primary" onclick="go('onway')">Start drive</button>
-  `;
-}
-
-function screenOnWay(){
-  const tight = state.riskChoice === 'push';
-  return `
-    <div class="status-pill ${tight?'tight':'ontrack'}"><div class="pdot" style="background:${tight?'var(--tight)':'var(--ontrack)'}"></div>${tight?'TIGHT':'ON TRACK'}</div>
-    <div class="title-lg" style="margin-top:12px;">Meridian Client HQ</div>
-    <div class="subtitle" style="margin-bottom:14px;">Arriving ${tight?'13:58':'13:52'}</div>
-    <div class="route-card">
-      <svg viewBox="0 0 280 70"><path d="M10 55 Q 90 10 150 30 T 270 15" stroke="#4954F0" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-dasharray="1 7"/><circle cx="10" cy="55" r="5" fill="#13151C"/><circle cx="270" cy="15" r="6" fill="#4954F0" stroke="#fff" stroke-width="2"/></svg>
-    </div>
-    <div class="up-next-card">
-      <div class="up-next-label">NEXT COMMITMENT</div>
-      <div class="up-next-row"><div class="up-next-name">Client meeting</div><div class="up-next-time">14:00</div></div>
-    </div>
-  `;
-}
-
-function screenArrived(){
-  const tight = state.riskChoice === 'push';
-  return `
-    <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>ARRIVED</div>
-    <div class="now-card" style="margin-top:12px;">
-      <div class="now-top">
-        <div><div class="now-name">Client meeting</div><div class="now-sub">Starts soon</div></div>
-        ${ring(tight?20:60,'var(--focus)',68, tight?'2':'8', 'min')}
-      </div>
-    </div>
-    <div class="up-next-card">
-      <div class="up-next-label">ONE LAST THING</div>
-      <div class="up-next-row"><div class="up-next-name">Review the pitch deck once more</div></div>
-      <div class="action-chip" onclick="toast('Opens the pitch deck')">Open document</div>
     </div>
   `;
 }
 
 function screenConflict(){
+  if (!pendingConflict) {
+    return `<div class="subtitle" style="margin-top:20px;">Nothing to resolve.</div>`;
+  }
+  const item = pendingConflict;
+  const lateBy = Date.now() - item.startMs;
   return `
     <div class="alert-card">
       <div class="alert-top">${I.warn}
         <div><div class="alert-title">Schedule conflict</div>
-        <div class="alert-sub">Your haircut is running about 40 minutes behind. Finishing the full appointment means arriving late to dinner.</div></div>
-      </div>
-      <div style="margin-top:10px;">
-        <div class="conflict-item"><div class="nm">Haircut</div><div class="tm">Running late</div></div>
-        <div class="conflict-item"><div class="nm">Dinner with Sarah</div><div class="tm">20:00</div></div>
+        <div class="alert-sub">"${item.activity.name}" was supposed to start at ${item.activity.time} — you're already ${formatMMSS(lateBy)} behind on it before it's even begun.</div></div>
       </div>
     </div>
-    <div class="choice-card" onclick="state.conflictChoice='A'; go('complete')">
-      <div><div class="choice-title">Cut it short</div><div class="choice-sub">Leave the salon at 19:20 · arrive at 20:00, right on time.</div></div>
+    <div class="choice-card" onclick="resolveConflict('skip')">
+      <div><div class="choice-title">Skip it</div><div class="choice-sub">Mark it as skipped and move on to what's after.</div></div>
       <div class="icon-btn">${I.chev}</div>
     </div>
-    <div class="choice-card" onclick="state.conflictChoice='B'; go('complete')">
-      <div><div class="choice-title">Finish the appointment</div><div class="choice-sub">Leave at 19:45 · arrive around 20:15, 15 minutes late.</div></div>
+    <div class="choice-card" onclick="resolveConflict('accept')">
+      <div><div class="choice-title">Do it now, running late</div><div class="choice-sub">Start it late rather than skip it.</div></div>
       <div class="icon-btn">${I.chev}</div>
     </div>
   `;
 }
 
 function screenComplete(){
-  const onTime = state.conflictChoice === 'A' ? '100%' : '91%';
-  const note = state.conflictChoice === 'B'
-    ? 'One commitment shifted today — dinner started 15 minutes late after your haircut ran over.'
-    : 'Every commitment happened on time today, including a mid-afternoon reroute you handled yourself.';
+  const stats = computeDayStats();
+  const hrs = Math.floor(stats.executedMs / 3600000);
+  const mins = Math.round((stats.executedMs % 3600000) / 60000);
+  const note = stats.late > 0
+    ? `${stats.late} item${stats.late>1?'s':''} finished later than planned today.`
+    : (stats.skipped > 0 ? `${stats.skipped} item${stats.skipped>1?'s':''} got skipped today.` : 'Everything finished on time today.');
   return `
-    <div class="complete-hero"><div class="lab">DAY COMPLETE</div><div class="big">3 / 3 Signals</div></div>
+    <div class="complete-hero"><div class="lab">DAY COMPLETE</div><div class="big">${stats.finished} / ${stats.total} done</div></div>
     <div class="stat-strip">
-      <div class="stat-chip"><div class="num">${onTime}</div><div class="lab">ON SCHEDULE</div></div>
-      <div class="stat-chip"><div class="num">7h 15m</div><div class="lab">EXECUTED</div></div>
+      <div class="stat-chip"><div class="num">${stats.onTimePct}%</div><div class="lab">ON SCHEDULE</div></div>
+      <div class="stat-chip"><div class="num">${hrs}h ${mins}m</div><div class="lab">EXECUTED</div></div>
     </div>
     <div class="note-line">${note}</div>
     <button class="btn-primary" onclick="go('captureDay')">Capture the day</button>
@@ -1155,7 +1206,7 @@ function screenCaptureDay(){
     </div>
     <div class="insight-card">
       <div class="insight-label">TODAY'S SUMMARY</div>
-      <div class="insight-body">3/3 Signals completed · ${state.conflictChoice === 'B' ? '91%' : '100%'} on schedule · 7h 15m executed</div>
+      <div class="insight-body">${(() => { const s = computeDayStats(); return `${s.finished}/${s.total} done · ${s.onTimePct}% on schedule`; })()}</div>
     </div>
   `;
 }
@@ -1164,7 +1215,7 @@ function saveCapture(){
   capturedDays.push({
     day: 47, date: 'Sep 6', caption,
     swatch: CAPTURE_SWATCHES[captureSwatchIndex],
-    signals: (state.conflictChoice === 'B' ? '91% on time' : '3/3 Signals'),
+    signals: (() => { const s = computeDayStats(); return `${s.finished}/${s.total} done, ${s.onTimePct}% on time`; })(),
   });
   captureSwatchIndex = 0;
   saveToStorage();
@@ -1191,24 +1242,16 @@ function renderRail(){
 }
 
 function renderDemoBar(){
+  // No scripted "fast forward" screens left in the live loop — everything
+  // in Now / At Risk / Conflict advances from real time or a real choice,
+  // so there's nothing left to simulate here.
   const bar = document.getElementById('demoBar');
-  const passive = {
-    now1: 'Meanwhile, 18 minutes pass at the keyboard.',
-    onway: "Meanwhile, you're on the road.",
-    arrived: 'Later — the meeting wraps, the haircut starts, and runs long.',
-  };
-  const nextMap = { now1:'atrisk', onway:'arrived', arrived:'conflict' };
-  if (passive[state.screen]) {
-    bar.innerHTML = `<div class="demo-tag">DEMO — SIMULATES TIME PASSING</div>
-      <div class="demo-caption">${passive[state.screen]}</div>
-      <button class="demo-btn" onclick="go('${nextMap[state.screen]}')">Continue →</button>`;
-  } else { bar.innerHTML = ''; }
+  bar.innerHTML = '';
 }
 
 function render(){
   const map = { plan:screenPlan, addActivity:screenAddActivity, structure:screenStructure, preview:screenPreview,
-    now1:screenNow1, atrisk:screenAtRisk, prepare:screenPrepare, leave:screenLeave,
-    onway:screenOnWay, arrived:screenArrived, conflict:screenConflict, complete:screenComplete,
+    now1:screenNow1, atrisk:screenAtRisk, conflict:screenConflict, complete:screenComplete,
     insights:screenInsights, profile:screenProfile, captureDay:screenCaptureDay };
   document.getElementById('screen').innerHTML = map[state.screen]();
   renderChrome();
@@ -1216,10 +1259,10 @@ function render(){
   renderDemoBar();
 }
 
-// Keeps the Now screen genuinely live — re-renders once a second while
-// it's on screen, so the countdown actually ticks against the real clock.
+// Keeps the live screens genuinely live — re-renders once a second while
+// one is on screen, so countdowns actually tick against the real clock.
 setInterval(() => {
-  if (state.screen === 'now1' && liveDay.startedAt) render();
+  if (['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) render();
 }, 1000);
 
 render();
