@@ -1136,7 +1136,8 @@ function screenNow1(){
       <div class="up-next-label">UP NEXT</div>
       <div class="up-next-row"><div class="up-next-name">${next.activity.name}</div><div class="up-next-time">${next.activity.time}</div></div>
     </div>` : ''}
-    <button class="btn-primary" style="margin-top:14px;" onclick="liveDayMarkCurrentDone()">Mark done, continue</button>
+    ${current.activity.location ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(current.activity.location)}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;margin-top:10px;">Navigate to ${current.activity.location}</a>` : ''}
+    <button class="btn-primary" style="margin-top:10px;" onclick="liveDayMarkCurrentDone()">Mark done, continue</button>
   `;
 }
 
@@ -1166,6 +1167,7 @@ function screenAtRisk(){
       <div><div class="choice-title">Give it 10 more minutes</div><div class="choice-sub">Push the deadline back and keep going.</div></div>
       <div class="icon-btn">${I.chev}</div>
     </div>
+    ${current.activity.location ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(current.activity.location)}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;margin-top:10px;">Navigate to ${current.activity.location}</a>` : ''}
   `;
 }
 
