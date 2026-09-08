@@ -147,6 +147,17 @@
   .status-pill.risk{ background:var(--risk-soft); color:var(--risk); }
 
   .now-card{ border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:12px; background:#fff; }
+  .linear-track{ height:6px; border-radius:4px; background:var(--border); overflow:hidden; margin-top:10px; }
+  .linear-fill{ height:100%; border-radius:4px; background:var(--focus); transition:width .3s ease; }
+  .linear-fill.risk{ background:var(--risk); }
+  .minutes-row{ display:flex; justify-content:space-between; font-size:12px; color:var(--ink-dim); margin-top:2px; }
+  .prep-checklist{ border:1px solid var(--border); border-radius:16px; padding:4px 14px; margin-bottom:12px; background:#fff; }
+  .prep-check-row{ display:flex; align-items:center; gap:11px; padding:11px 0; border-top:1px solid var(--border); cursor:pointer; }
+  .prep-check-row:first-of-type{ border-top:none; }
+  .eta-row{ display:flex; justify-content:space-between; align-items:flex-end; padding-top:2px; }
+  .eta-row .lab{ font-size:11px; color:var(--ink-faint); font-weight:700; letter-spacing:0.04em; }
+  .eta-row .val{ font-size:15px; font-weight:800; margin-top:2px; }
+  .big-route-card{ border-radius:16px; overflow:hidden; margin-top:8px; background:linear-gradient(135deg, var(--navy-a), var(--navy-b)); height:140px; position:relative; }
   .now-top{ display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
   .now-name{ font-size:19px; font-weight:800; letter-spacing:-0.01em; margin-bottom:4px; }
   .now-sub{ font-size:12.5px; color:var(--ink-dim); }
@@ -316,7 +327,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v13 · improved short-trip and walking accuracy';
+const APP_VERSION = 'v16 · Prepare screen, linear progress, final-stretch alert';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -332,10 +343,15 @@ const VISION_AXES = [
 ];
 let vision = {achievement:90, health:80, relationships:70, growth:65, recovery:50, personal:40};
 const reality = {achievement:93, health:52, relationships:38, growth:60, recovery:55, personal:45};
-let capturedDays = [
-  {day:46, date:'Sep 5', caption:'Shipped the SIMA prototype to the first tester.', swatch:'linear-gradient(135deg,#4954F0,#8B5CF6)', signals:'3/3 Signals'},
-  {day:45, date:'Sep 4', caption:'Long overdue call with mom. Worth the reroute.', swatch:'linear-gradient(135deg,#149C88,#4954F0)', signals:'2/3 Signals'},
-];
+
+// Real accumulated state — starts empty, grows only from things you
+// actually did. No seeded/fake entries: an empty state that's honest is
+// better than a fake one that looks like history you don't actually have.
+let capturedDays = [];
+let dayHistory = [];      // one real entry per completed day: {date, total, finished, onTime, late, skipped, executedMs}
+let performanceCapital = 0;
+let firstUseDate = null;
+
 let captureSwatchIndex = 0;
 const CAPTURE_SWATCHES = ['linear-gradient(135deg,#4954F0,#8B5CF6)','linear-gradient(135deg,#149C88,#4954F0)','linear-gradient(135deg,#E39A2A,#E8503A)','linear-gradient(135deg,#8B5CF6,#E8503A)'];
 let voiceOpen = false;
@@ -346,6 +362,9 @@ function saveToStorage(){
     localStorage.setItem('sima_activities', JSON.stringify(activities));
     localStorage.setItem('sima_captured', JSON.stringify(capturedDays));
     localStorage.setItem('sima_vision', JSON.stringify(vision));
+    localStorage.setItem('sima_history', JSON.stringify(dayHistory));
+    localStorage.setItem('sima_capital', JSON.stringify(performanceCapital));
+    localStorage.setItem('sima_first_use', JSON.stringify(firstUseDate));
   } catch(e){ console.warn('Storage unavailable:', e); }
 }
 function loadFromStorage(){
@@ -353,9 +372,15 @@ function loadFromStorage(){
     const a = localStorage.getItem('sima_activities');
     const c = localStorage.getItem('sima_captured');
     const v = localStorage.getItem('sima_vision');
+    const h = localStorage.getItem('sima_history');
+    const cap = localStorage.getItem('sima_capital');
+    const fu = localStorage.getItem('sima_first_use');
     if (a) activities = JSON.parse(a);
     if (c) capturedDays = JSON.parse(c);
     if (v) vision = JSON.parse(v);
+    if (h) dayHistory = JSON.parse(h);
+    if (cap) performanceCapital = JSON.parse(cap);
+    if (fu) firstUseDate = JSON.parse(fu);
   } catch(e){ console.warn('Storage unavailable:', e); }
 }
 
@@ -482,13 +507,53 @@ function stageFor(item, nowMs){
   return 'doing';
 }
 
+/// Real Performance Capital: earned by actually keeping commitments, more
+/// for Signal-priority ones, more for finishing on time than late.
+function capitalFor(priority, onTime){
+  const base = priority === 'signal' ? 15 : priority === 'next' ? 8 : 3;
+  return onTime ? base : Math.round(base / 2);
+}
+
+/// Prep suggestions the person hasn't had to type in — there's always
+/// something here rather than an empty checklist, chosen by activity type
+/// since a meeting and a personal errand call for different prompts.
+const PREP_POOL = {
+  meeting: ['Bring notes or an agenda', 'Charge your phone', 'Review who you\'re meeting'],
+  focus:   ['Close distracting tabs', 'Silence notifications', 'Have water nearby'],
+  personal:['Grab what you need', 'Stay focused', 'Take a breath before you go'],
+};
+function recommendedPrepItems(activity){
+  const list = PREP_POOL[activity.type] || ['Stay focused', 'Grab your bag', 'Double-check the time'];
+  return list.map((label, i) => ({ id: activity.id + '_prep_' + i, label }));
+}
+let prepChecks = {};
+function togglePrepCheck(id){ prepChecks[id] = !prepChecks[id]; renderScreenOnly(); }
+
 function liveDayMarkCurrentDone(){
   const nowMs = Date.now();
   const current = liveDayCurrentItem(nowMs);
   if (!current) { render(); return; }
+  const onTime = nowMs <= current.endMs;
   liveDay.doneMeta.set(current.activity.id, { doneAt: nowMs, skipped: false });
   current.timers.forEach(id => clearTimeout(id));
   current.timers = [];
+  const earned = capitalFor(current.activity.priority, onTime);
+  performanceCapital += earned;
+  saveToStorage();
+
+  // Real-time acknowledgment for the thing you just actually did — this
+  // is what "alive" can still mean without a Lock Screen widget: instant
+  // response to your real action, not another scheduled timer.
+  fireNotification(`Nice work — ${current.activity.name} done`, `+${earned} pts${onTime ? '' : ' (a bit late, still counts)'}`);
+
+  // If that was the last real item left, send a genuine Day Complete
+  // notification — useful specifically because you might not be looking
+  // at the screen right when the day actually wraps up.
+  const remaining = liveDay.schedule.filter(it => !liveDay.doneMeta.has(it.activity.id));
+  if (remaining.length === 0) {
+    const stats = computeDayStats();
+    fireNotification('Day complete', `${stats.finished}/${stats.total} done · ${stats.onTimePct}% on schedule`);
+  }
 
   // Check whether finishing this just revealed we're already late for
   // whatever comes next — real conflict detection, not a scripted one.
@@ -590,6 +655,38 @@ function scheduleNotificationsFor(schedule, nowMs){
       scheduledTimers.push(id);
       item.timers.push(id);
     }
+    // A halfway check-in, but only for activities long enough that it
+    // actually means something — a quiet reassurance ping, not a nag.
+    // Skips items already past their halfway point (e.g. edits mid-day).
+    if (durationMin >= 30) {
+      const halfwayMs = item.startMs + (item.endMs - item.startMs) / 2;
+      const halfwayDelay = halfwayMs - nowMs;
+      if (halfwayDelay > 0) {
+        const remainingMin = Math.round((item.endMs - halfwayMs) / 60000);
+        const id = setTimeout(() => fireNotification(
+          `Halfway there: ${item.activity.name}`,
+          `${remainingMin} min left`
+        ), halfwayDelay);
+        scheduledTimers.push(id);
+        item.timers.push(id);
+      }
+    }
+    // A final-stretch nudge in the last few minutes of longer activities —
+    // a second real touchpoint alongside the halfway check-in, still
+    // graduated so short activities don't get either.
+    if (durationMin >= 15) {
+      const stretchMin = Math.min(5, Math.round(durationMin * 0.15));
+      const stretchMs = item.endMs - stretchMin*60*1000;
+      const stretchDelay = stretchMs - nowMs;
+      if (stretchDelay > 0) {
+        const id = setTimeout(() => fireNotification(
+          `Almost there: ${item.activity.name}`,
+          `${stretchMin} min left`
+        ), stretchDelay);
+        scheduledTimers.push(id);
+        item.timers.push(id);
+      }
+    }
   });
 }
 
@@ -634,6 +731,22 @@ function computeDayStats(){
   const finished = onTime + late;
   const onTimePct = finished > 0 ? Math.round((onTime/finished)*100) : 100;
   return { total, onTime, late, skipped, finished, onTimePct, executedMs };
+}
+
+/// Real Performance Index: the average on-time rate over your last 7
+/// logged days. Returns null if there's no real history yet — an honest
+/// "not enough data" beats a fabricated starting number.
+function computePerformanceIndex(){
+  if (dayHistory.length === 0) return null;
+  const recent = dayHistory.slice(-7);
+  const avg = recent.reduce((sum, d) => sum + d.onTimePct, 0) / recent.length;
+  return Math.round(avg);
+}
+function performanceTrend(){
+  if (dayHistory.length < 2) return null;
+  const last = dayHistory[dayHistory.length - 1].onTimePct;
+  const prevAvg = dayHistory.slice(0, -1).slice(-7).reduce((s,d)=>s+d.onTimePct,0) / Math.max(1, dayHistory.slice(0,-1).slice(-7).length);
+  return Math.round(last - prevAvg);
 }
 
 async function requestNotifications(){
@@ -691,6 +804,11 @@ function go(screen){
   render();
 }
 function restart(){
+  // Log real history for the day that's ending, before resetting anything.
+  if (liveDay.startedAt && liveDay.schedule.length > 0) {
+    const stats = computeDayStats();
+    dayHistory.push({ date: new Date().toISOString().slice(0,10), ...stats });
+  }
   clearScheduledNotifications();
   activities = [
     {id:'s1', time:'09:00', name:'Finish SIMA pitch', dur:'2h', priority:'signal', type:'focus'},
@@ -994,7 +1112,10 @@ function renderChrome(){
   if (s === 'plan'){
     bar.innerHTML = `<div class="side">${I.menu}</div><div class="brand">SIMA</div><div class="side right icon-btn" onclick="toast('No new notifications')">${I.bell}</div>`;
   } else if (s === 'now1' || s === 'atrisk'){
-    bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">Day</div><div class="side right icon-btn" onclick="toast('Settings coming later')">${I.sliders}</div>`;
+    const nowMs2 = Date.now();
+    const cur2 = liveDay.startedAt ? liveDayCurrentItem(nowMs2) : null;
+    const titleText = (s === 'now1' && cur2 && stageFor(cur2, nowMs2) === 'leave') ? 'Prepare' : 'Now';
+    bar.innerHTML = `<div class="side">${I.menu}</div><div class="title">${titleText}</div><div class="side right icon-btn" onclick="toast('Settings coming later')">${I.sliders}</div>`;
   } else if (['conflict'].includes(s)){
     bar.innerHTML = `<div class="side icon-btn" onclick="toast('You can\\'t rewind a day in progress')">${I.back}</div><div class="title">${titleFor(s)}</div><div class="side right icon-btn" onclick="toast('Nothing here yet')">${I.more}</div>`;
   } else if (s === 'complete'){
@@ -1173,6 +1294,7 @@ function screenPreview(){
 }
 
 function startDayLive(){
+  if (!firstUseDate) firstUseDate = new Date().toISOString();
   scheduleRealNotifications();
   saveToStorage();
   go('now1');
@@ -1219,12 +1341,28 @@ function screenNow1(){
   if (stage === 'leave') {
     const untilStart = current.startMs - nowMs;
     const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(current.activity.location || current.activity.name);
+    const prepItems = recommendedPrepItems(current.activity);
     return `
-      <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>LEAVE NOW</div>
-      <div class="now-card" style="margin-top:12px;">
-        <div class="now-top">
-          <div><div class="now-name">${current.activity.name}</div><div class="now-sub">${current.activity.location || ''}</div></div>
-          ${ring(0, 'var(--focus)', 68, formatMMSS(untilStart), 'to start')}
+      <div class="up-next-label" style="margin-bottom:2px;">${current.activity.location || ''}</div>
+      <div class="title-lg" style="margin-top:0;margin-bottom:2px;">${current.activity.name}</div>
+      <div class="subtitle" style="margin-bottom:14px;">${current.activity.time}${current.activity.location ? ' · ' + current.activity.location : ''}</div>
+      <div class="now-card" style="display:flex;align-items:center;justify-content:space-between;">
+        <div><div class="now-sub" style="font-weight:800;color:var(--ink);font-size:13.5px;">Leave in</div>
+        <div class="now-name" style="font-size:22px;">${formatMMSS(untilStart)}</div></div>
+        ${ring(Math.max(0, Math.min(100, (untilStart/(15*60000))*100)), 'var(--focus)', 64, '', '')}
+      </div>
+      <div class="prep-checklist">
+        <div class="cl-label" style="padding-top:12px;">PREPARATION CHECKLIST</div>
+        ${prepItems.map(it => `
+          <div class="prep-check-row" onclick="togglePrepCheck('${it.id}')">
+            <div class="check-box ${prepChecks[it.id]?'on':''}">${prepChecks[it.id]?I.check:''}</div>
+            <div class="check-label ${prepChecks[it.id]?'on':''}">${it.label}</div>
+          </div>`).join('')}
+      </div>
+      <div class="now-card">
+        <div class="eta-row">
+          <div><div class="lab">ETA</div><div class="val">${new Date(current.startMs).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</div></div>
+          <div style="text-align:right;"><div class="lab">BUFFER</div><div class="val">${Math.max(0, Math.round((current.startMs - Date.now())/60000) - (current.leaveByMs!=null ? Math.round((current.startMs-current.leaveByMs)/60000) : 0))} min</div></div>
         </div>
       </div>
       <a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Navigate</a>
@@ -1240,6 +1378,8 @@ function screenNow1(){
   const totalMs = current.endMs - current.startMs;
   const remainingMs = overdue ? (nowMs - current.endMs) : (current.endMs - nowMs);
   const pct = overdue ? 0 : Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
+  const elapsedMin = Math.round((totalMs - Math.max(0,remainingMs)) / 60000);
+  const totalMin = Math.round(totalMs / 60000);
 
   // First moment this item goes overdue: interrupt with the real At Risk screen once.
   if (overdue && !atRiskShownFor.has(current.activity.id) && state.screen === 'now1') {
@@ -1248,19 +1388,20 @@ function screenNow1(){
   }
 
   return `
-    ${heroMap()}
-    <div class="status-pill ${overdue?'risk':'ontrack'}"><div class="pdot" style="background:${overdue?'var(--risk)':'var(--ontrack)'}"></div>${overdue?'AT RISK':'ON TRACK'}</div>
-    <div class="now-card" style="margin-top:12px;">
-      <div class="now-top">
-        <div><div class="now-name">${current.activity.name}</div><div class="now-sub">${overdue ? "Running behind — mark it done when you actually wrap up" : 'Live countdown, real clock'}</div></div>
-        ${ring(pct, overdue?'var(--risk)':'var(--focus)', 68, (overdue?'+':'')+formatMMSS(remainingMs), overdue?'over':'left')}
-      </div>
+    <div class="status-pill ${overdue?'risk':'ontrack'}"><div class="pdot" style="background:${overdue?'var(--risk)':'var(--ontrack)'}"></div>${overdue?'AT RISK':'ON SCHEDULE'}</div>
+    <div class="title-lg" style="margin-top:10px;margin-bottom:2px;">${current.activity.name}</div>
+    <div class="minutes-row" style="margin-bottom:0;">
+      <span>${overdue ? '+'+formatMMSS(remainingMs)+' over' : formatMMSS(remainingMs)+' remaining'}</span>
+      <span>${overdue ? totalMin : elapsedMin} / ${totalMin} min</span>
     </div>
+    <div class="linear-track"><div class="linear-fill ${overdue?'risk':''}" style="width:${overdue?100:pct}%;"></div></div>
     ${next ? `
-    <div class="up-next-card">
+    <div class="up-next-card" style="margin-top:14px;">
       <div class="up-next-label">UP NEXT</div>
       <div class="up-next-row"><div class="up-next-name">${next.activity.name}</div><div class="up-next-time">${next.activity.time}</div></div>
+      ${next.activity.location ? `<div class="up-next-label" style="margin-top:4px;">${next.activity.location}</div>` : ''}
     </div>` : ''}
+    ${heroMap()}
     ${current.activity.location ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(current.activity.location)}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;margin-top:10px;">Navigate to ${current.activity.location}</a>` : ''}
     <button class="btn-primary" style="margin-top:10px;" onclick="liveDayMarkCurrentDone()">Mark done, continue</button>
   `;
@@ -1369,54 +1510,69 @@ function screenInsights(){
 
     <div class="insight-card">
       <div class="insight-label">TRAJECTORY</div>
-      <div class="insight-body">Your Vision leans hardest on <b>Achievement</b> and <b>Health</b>. Over the last 30 days, Achievement has been climbing while Health has been slipping — that gap is the widest one on the board.</div>
+      <div class="insight-body">This shows the shape the feature will take — <b>real</b> once activities can be tagged by life area (Achievement, Health, etc). Right now Reality here is placeholder, not derived from what you've actually done.</div>
     </div>
 
     <div class="section-label">PERFORMANCE</div>
     <div class="insight-card">
       <div class="insight-label">PERFORMANCE INDEX</div>
-      <div class="perf-row">
-        <div><div class="perf-num">87</div><div class="perf-trend">↑ 4 this week</div></div>
-      </div>
+      ${performanceIndexRow()}
     </div>
     <div class="insight-card">
       <div class="insight-label">PERFORMANCE CAPITAL</div>
-      <div class="capital-num">2,745 pts <span style="color:var(--ontrack);font-size:13px;font-weight:700;">+128 today</span></div>
-      <div class="insight-body" style="margin-top:6px;">Earned by keeping the promises you made to yourself — Signal commitments count for far more than clearing small Later tasks.</div>
+      <div class="capital-num">${performanceCapital.toLocaleString()} pts</div>
+      <div class="insight-body" style="margin-top:6px;">Earned by keeping the promises you made to yourself — Signal commitments count for far more than clearing small Later tasks. This only grows from real completed days — it started at zero.</div>
     </div>
   `;
+}
+function performanceIndexRow(){
+  const index = computePerformanceIndex();
+  if (index == null) {
+    return `<div class="insight-body">Not enough real days logged yet — this fills in once you've completed at least one full day with Start Day.</div>`;
+  }
+  const trend = performanceTrend();
+  const trendHtml = trend == null ? '' : `<div class="perf-trend" style="color:${trend>=0?'var(--ontrack)':'var(--risk)'};">${trend>=0?'↑':'↓'} ${Math.abs(trend)} vs your recent average</div>`;
+  return `<div class="perf-row"><div><div class="perf-num">${index}</div>${trendHtml}</div></div>`;
 }
 
 /* ---------- Profile: Capture the Day, life feed, memory ---------- */
 function screenProfile(){
+  const realDayCount = dayHistory.length;
+  const headerMeta = realDayCount > 0 ? `${realDayCount} real day${realDayCount>1?'s':''} logged` : 'No real days completed yet';
+  const hasCompletedToday = liveDay.startedAt && liveDay.schedule.length > 0 && liveDay.schedule.every(it => liveDay.doneMeta.has(it.activity.id));
+
   return `
     <div class="profile-header">
       <div class="profile-avatar"></div>
-      <div><div class="profile-name">You</div><div class="profile-meta">Day 47 · Started Jul 22</div></div>
+      <div><div class="profile-name">You</div><div class="profile-meta">${headerMeta}</div></div>
     </div>
 
-    <div class="memory-card">
-      <div class="memory-label">MEMORY · 45 DAYS AGO</div>
-      <div class="memory-text">Your first completed Signal streak — three days in a row without missing one.</div>
-    </div>
+    ${capturedDays.length === 0 ? `
+    <div class="insight-card" style="margin-bottom:14px;">
+      <div class="insight-body">Memories will show up here once you've captured a few real days — nothing fabricated in the meantime.</div>
+    </div>` : ''}
 
+    ${hasCompletedToday ? `
     <div class="capture-prompt" onclick="go('captureDay')">
       <div style="font-size:22px;">📷</div>
-      <div class="txt"><b>Capture today</b><span>Day 47 is complete — give it a photo before it fades.</span></div>
-    </div>
+      <div class="txt"><b>Capture today</b><span>Today's real day is complete — give it a photo before it fades.</span></div>
+    </div>` : ''}
 
     <div class="section-label" style="margin-top:2px;">YOUR DAYS</div>
-    ${capturedDays.slice().reverse().map(d=>`
+    ${capturedDays.length === 0 ? `<div class="subtitle" style="margin:2px 0 10px;">Nothing captured yet.</div>` : capturedDays.slice().reverse().map(d=>`
       <div class="feed-card">
         <div class="feed-photo" style="background:${d.swatch};"></div>
-        <div><div class="feed-day">DAY ${d.day} · ${d.date}</div><div class="feed-caption">${d.caption}</div><div class="feed-stats">${d.signals}</div></div>
+        <div><div class="feed-day">${d.date}</div><div class="feed-caption">${d.caption}</div><div class="feed-stats">${d.signals}</div></div>
       </div>`).join('')}
 
     <div class="section-label">NOTIFICATIONS YOU'D GET</div>
     <div class="insight-card">
       <div class="notif-row"><div class="txt"><span class="tag">LEAVE SOON</span><br>Sent before an activity with travel time, scaled to how long the drive is.</div></div>
       <div class="notif-row"><div class="txt"><span class="tag">STARTING SOON</span><br>Sent before a longer activity begins — skipped entirely for short ones.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">HALFWAY THERE</span><br>A quiet check-in partway through anything 30+ minutes long.</div></div>
       <div class="notif-row"><div class="txt"><span class="tag">RUNNING BEHIND</span><br>Sent the moment something runs past its end time without being marked done.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">NICE WORK</span><br>Sent instantly when you mark something done, with the points you earned.</div></div>
+      <div class="notif-row"><div class="txt"><span class="tag">DAY COMPLETE</span><br>Sent the moment your last real item for the day is marked done.</div></div>
     </div>
   `;
 }
@@ -1440,7 +1596,7 @@ function screenCaptureDay(){
 function saveCapture(){
   const caption = document.getElementById('captureCaption').value.trim() || 'A day with SIMA.';
   capturedDays.push({
-    day: 47, date: 'Sep 6', caption,
+    date: new Date().toLocaleDateString([], {month:'short', day:'numeric'}), caption,
     swatch: CAPTURE_SWATCHES[captureSwatchIndex],
     signals: (() => { const s = computeDayStats(); return `${s.finished}/${s.total} done, ${s.onTimePct}% on time`; })(),
   });
