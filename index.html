@@ -361,7 +361,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v24 · persistent live status bar on every screen';
+const APP_VERSION = 'v25 · status bar now shows on the Prepare screen too';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -1806,9 +1806,20 @@ const SCREEN_MAP = { plan:screenPlan, addActivity:screenAddActivity, chooseTrave
 function renderMiniStatusBar(){
   const bar = document.getElementById('miniStatusBar');
   if (!bar) return;
-  if (!liveDay.startedAt || ['now1','atrisk','conflict'].includes(state.screen)) {
-    bar.style.display = 'none';
-    return;
+  if (!liveDay.startedAt) { bar.style.display = 'none'; return; }
+  if (state.screen === 'atrisk' || state.screen === 'conflict') { bar.style.display = 'none'; return; }
+  if (state.screen === 'now1') {
+    // "now1" covers both the full In Progress/Wrapping Up views (which
+    // already show their own big status pill — hide the mini bar there
+    // to avoid a duplicate) and the Prepare view (which has no pill of
+    // its own since matching the reference template) — the mini bar
+    // needs to stay visible there, or Prepare has no status indicator
+    // at all, which was the actual bug being reported here.
+    const currentStage = computeCurrentStage(Date.now()).type;
+    if (currentStage === 'doing' || currentStage === 'wrapping') {
+      bar.style.display = 'none';
+      return;
+    }
   }
   const nowMs = Date.now();
   const stage = computeCurrentStage(nowMs);
