@@ -150,6 +150,30 @@
 
   .now-card{ border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:12px; background:#fff; }
   .linear-track{ height:6px; border-radius:4px; background:var(--border); overflow:hidden; margin-top:10px; }
+  .journey-wrap{ background:linear-gradient(180deg,#EEF1FE,#F7F8FE); border-radius:20px; padding:20px 16px 14px; margin-bottom:14px; }
+  .journey-tagline{ text-align:center; font-size:13px; color:var(--ink-dim); margin-top:10px; }
+  .now-pill{ display:inline-block; background:var(--accent); color:#fff; font-size:12px; font-weight:800; letter-spacing:0.03em; padding:6px 14px; border-radius:20px; margin-bottom:14px; }
+  .finish-row{ display:flex; align-items:center; justify-content:space-between; border-top:1px solid var(--border); margin-top:16px; padding-top:14px; }
+  .finish-row .lab{ font-size:12px; color:var(--ink-dim); }
+  .finish-row .val{ font-size:19px; font-weight:800; margin-top:2px; }
+  .ontrack-chip{ display:flex; align-items:center; gap:7px; font-size:14px; font-weight:700; color:var(--ink); }
+  .ontrack-chip .tick{ width:22px; height:22px; border-radius:50%; background:var(--ontrack); display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .up-next-big-row{ display:flex; align-items:center; gap:11px; }
+  .up-next-big-row .dot{ width:11px; height:11px; border-radius:50%; flex-shrink:0; }
+  .prepare-hero h2{ font-size:22px; font-weight:800; margin:4px 0 6px; }
+  .prepare-hero p{ font-size:13.5px; color:var(--ink-dim); margin:0 0 18px; line-height:1.5; }
+  .prep-now-card{ border:1px solid var(--border); border-radius:16px; padding:6px 16px; margin-bottom:14px; background:#fff; }
+  .prep-now-head{ display:flex; align-items:baseline; justify-content:space-between; padding:14px 0 8px; }
+  .prep-now-head b{ font-size:15px; font-weight:800; }
+  .prep-now-head span{ font-size:11.5px; color:var(--ink-dim); }
+  .check-circle{ width:24px; height:24px; border-radius:50%; border:1.5px solid var(--ink-faint); display:flex; align-items:center; justify-content:center; flex-shrink:0; background:#fff; }
+  .check-circle.on{ background:var(--accent); border-color:var(--accent); }
+  .leave-in-card{ border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:14px; display:flex; align-items:center; justify-content:space-between; background:#fff; }
+  .leave-in-card .lab{ font-size:11px; font-weight:800; letter-spacing:0.04em; color:var(--ink-faint); }
+  .leave-in-card .big{ font-size:26px; font-weight:800; margin:2px 0; }
+  .leave-in-card .sub{ font-size:12.5px; color:var(--ink-dim); }
+  .leave-ring{ width:76px; height:76px; border-radius:50%; border:5px solid var(--accent); display:flex; flex-direction:column; align-items:center; justify-content:center; flex-shrink:0; }
+  .leave-ring span{ font-size:11px; font-weight:800; margin-top:2px; }
   .linear-fill{ height:100%; border-radius:4px; background:var(--focus); transition:width .3s ease; }
   .linear-fill.risk{ background:var(--risk); }
   .minutes-row{ display:flex; justify-content:space-between; font-size:12px; color:var(--ink-dim); margin-top:2px; }
@@ -329,7 +353,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v17 · one live state, five clear modes, auto-transitions';
+const APP_VERSION = 'v18 · exact Now/Prepare templates';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -1091,6 +1115,29 @@ function heroMap(){
   </svg></div>`;
 }
 
+/// Decorative header for the Now screen — an Earlier/Now/Later journey
+/// with a wavy connecting path. Purely visual, always the same regardless
+/// of real data, matching the reference template.
+function journeyPath(){
+  return `
+    <div class="journey-wrap">
+      <svg viewBox="0 0 320 130" width="100%" height="120">
+        <path d="M18 95 Q 70 55 118 78 T 230 62 T 300 40" stroke="#C7CEF7" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+        <path d="M15 118 Q 90 100 160 116 T 305 110" stroke="#DDE2FA" stroke-width="18" fill="none" stroke-linecap="round" opacity="0.5"/>
+        <circle cx="18" cy="95" r="7" fill="#fff" stroke="#C7CEF7" stroke-width="2.5"/>
+        <text x="18" y="78" text-anchor="middle" font-size="12" font-weight="700" fill="#8891A1">Earlier</text>
+        <circle cx="150" cy="70" r="14" fill="#fff" stroke="#4954F0" stroke-width="3"/>
+        <circle cx="150" cy="70" r="6" fill="#4954F0"/>
+        <rect x="120" y="28" width="60" height="24" rx="12" fill="#4954F0"/>
+        <text x="150" y="44" text-anchor="middle" font-size="12" font-weight="800" fill="#fff">Now</text>
+        <circle cx="300" cy="40" r="7" fill="#fff" stroke="#4954F0" stroke-width="2.5"/>
+        <text x="288" y="24" text-anchor="end" font-size="12" font-weight="700" fill="#8891A1">Later</text>
+      </svg>
+      <div class="journey-tagline">Live guidance for your day.</div>
+    </div>
+  `;
+}
+
 /* ---------- radar chart (Vision vs Reality) ---------- */
 function radarPoint(cx, cy, radius, index, total, value){
   const angle = (Math.PI * 2 * index) / total - Math.PI / 2;
@@ -1380,34 +1427,45 @@ function screenNow1(){
     `;
   }
 
-  if (stage.type === 'starting') {
+  if (stage.type === 'starting' || stage.type === 'leave') {
     const item = stage.item;
+    const isLeave = stage.type === 'leave';
     const untilStart = item.startMs - nowMs;
-    return `
-      <div class="status-pill starting"><div class="pdot" style="background:var(--meeting)"></div>STARTING SOON</div>
-      <div class="now-card" style="margin-top:12px;">
-        <div class="now-name" style="font-size:26px;">${formatMMSS(untilStart)}</div>
-        <div class="now-sub" style="margin-bottom:10px;">until it begins</div>
-        <div class="up-next-name" style="font-size:15px;">${item.activity.name}</div>
-        <div class="now-sub">Wrap up what you're on now</div>
-      </div>
-      <button class="btn-outline" style="margin-top:10px;" onclick="toast('Noted — see you at start time')">Ready early</button>
-    `;
-  }
-
-  if (stage.type === 'leave') {
-    const item = stage.item;
-    const untilStart = item.startMs - nowMs;
+    const leadMin = isLeave
+      ? Math.round((item.startMs - item.leaveByMs) / 60000)
+      : prepLeadMinutesFor((item.endMs - item.startMs) / 60000);
+    const totalLeadMs = leadMin * 60000;
+    const pct = totalLeadMs > 0 ? Math.max(0, Math.min(100, (untilStart/totalLeadMs)*100)) : 0;
+    const remainMin = Math.max(0, Math.round(untilStart / 60000));
+    const prepItems = recommendedPrepItems(item.activity);
     const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(item.activity.location || item.activity.name);
     return `
-      <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>LEAVE SOON</div>
-      <div class="now-card" style="margin-top:12px;">
-        <div class="now-name" style="font-size:26px;">${formatMMSS(untilStart)}</div>
-        <div class="now-sub" style="margin-bottom:10px;">until you need to leave</div>
-        <div class="up-next-name" style="font-size:15px;">${item.activity.name}</div>
-        <div class="now-sub">${item.activity.location || ''}</div>
+      <div class="prepare-hero">
+        <h2>Almost there!</h2>
+        <p>Time to prepare for your next important commitment.</p>
       </div>
-      <a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Navigate</a>
+      <div class="prep-now-card">
+        <div class="prep-now-head"><b>Prepare Now</b><span>Get ready for what's next.</span></div>
+        ${prepItems.map(it => `
+          <div class="prep-check-row" onclick="togglePrepCheck('${it.id}')">
+            <div class="check-circle ${prepChecks[it.id]?'on':''}">${prepChecks[it.id]?I.check:''}</div>
+            <div class="check-label ${prepChecks[it.id]?'on':''}">${it.label}</div>
+          </div>`).join('')}
+      </div>
+      <div class="leave-in-card">
+        <div>
+          <div class="lab">${isLeave ? 'LEAVE IN' : 'STARTS IN'}</div>
+          <div class="big">${remainMin} min</div>
+          <div class="sub">${isLeave ? 'To arrive on time' : "You're all set"}</div>
+        </div>
+        <div class="leave-ring" style="border-color:${pct<25?'var(--tight)':'var(--accent)'};">
+          ${isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>'}
+          <span>${remainMin} min</span>
+        </div>
+      </div>
+      ${isLeave
+        ? `<a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`
+        : `<button class="btn-primary" onclick="toast('Noted — see you at start time')">Got it →</button>`}
     `;
   }
 
@@ -1417,24 +1475,39 @@ function screenNow1(){
     const totalMs = item.endMs - item.startMs;
     const remainingMs = item.endMs - nowMs;
     const pct = Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
-    const elapsedMin = Math.round((totalMs - remainingMs) / 60000);
-    const totalMin = Math.round(totalMs / 60000);
+    const remainingMin = Math.round(remainingMs / 60000);
+    const finishBy = new Date(item.endMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    const typeLabel = { focus:'Focus time', meeting:'Meeting', personal:'Personal time', prepare:'Preparation' }[item.activity.type] || 'Activity';
     return `
-      <div class="status-pill ontrack"><div class="pdot" style="background:var(--ontrack)"></div>IN PROGRESS</div>
-      <div class="title-lg" style="margin-top:10px;margin-bottom:2px;">${item.activity.name}</div>
-      <div class="minutes-row" style="margin-bottom:0;">
-        <span>${formatMMSS(remainingMs)} left</span>
-        <span>${elapsedMin} / ${totalMin} min</span>
+      ${journeyPath()}
+      <div class="now-pill">NOW</div>
+      <div class="now-card">
+        <div class="now-top">
+          <div><div class="now-name">${item.activity.name}</div><div class="now-sub">${typeLabel}</div></div>
+          ${ring(pct, 'var(--focus)', 84, remainingMin, 'min left')}
+        </div>
+        <div class="finish-row">
+          <div><div class="lab">Finish by</div><div class="val">${finishBy}</div></div>
+          <div class="ontrack-chip"><div class="tick">${I.check}</div>On Track</div>
+        </div>
       </div>
-      <div class="linear-track"><div class="linear-fill" style="width:${pct}%;"></div></div>
-      ${next ? `<div class="up-next-label" style="margin-top:14px;">UP NEXT · ${next.activity.name}, ${next.activity.time}</div>` : ''}
-      ${item.activity.location ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.activity.location)}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;margin-top:14px;">Navigate to ${item.activity.location}</a>` : ''}
+      ${next ? `
+      <div class="up-next-card">
+        <div class="up-next-label">UP NEXT</div>
+        <div class="up-next-big-row">
+          <div class="dot" style="background:${PRI_COLOR[next.activity.priority]}"></div>
+          <div style="flex:1;"><div class="up-next-name">${next.activity.name}</div><div class="up-next-time">${next.activity.time} – ${new Date(next.endMs).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</div></div>
+          <div class="icon-btn">${I.chev}</div>
+        </div>
+      </div>` : ''}
+      ${item.activity.location ? `<a href="https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(item.activity.location)}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;margin-top:10px;">Navigate to ${item.activity.location}</a>` : ''}
       <button class="btn-primary" style="margin-top:10px;" onclick="liveDayMarkCurrentDone()">Mark done, continue</button>
     `;
   }
 
   if (stage.type === 'wrapping') {
     const item = stage.item;
+    const next = liveDayNextItem(nowMs);
     const remainingMin = Math.max(0, Math.round((item.endMs - nowMs) / 60000));
     return `
       <div class="status-pill tight"><div class="pdot" style="background:var(--tight)"></div>WRAPPING UP</div>
@@ -1442,6 +1515,7 @@ function screenNow1(){
         <div class="now-name">${item.activity.name}</div>
         <div class="now-sub">${remainingMin} min left on schedule</div>
       </div>
+      ${next ? `<div class="up-next-label" style="margin-top:10px;">Then: ${next.activity.name} at ${next.activity.time}</div>` : ''}
       <button class="btn-primary" style="margin-top:12px;" onclick="liveDayMarkCurrentDone()">Mark done</button>
       <button class="btn-outline" style="margin-top:8px;" onclick="extendCurrent(10)">Need more time</button>
     `;
