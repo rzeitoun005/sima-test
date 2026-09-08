@@ -294,6 +294,13 @@
   .notif-row .tag{ font-size:9.5px; font-weight:800; color:var(--ink-faint); letter-spacing:0.05em; }
 
   /* ---- Voice ---- */
+  .mini-status-bar{
+    display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer;
+    border-top:1px solid var(--border); background:#fff;
+  }
+  .mini-status-bar .msb-dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+  .mini-status-bar .msb-text{ flex:1; min-width:0; font-size:12.5px; font-weight:700; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mini-status-bar .msb-sub{ font-size:11px; color:var(--ink-dim); font-weight:600; flex-shrink:0; }
   .voice-fab{
     position:absolute; right:16px; bottom:82px; width:50px; height:50px; border-radius:50%;
     background:var(--ink); color:#fff; display:flex; align-items:center; justify-content:center;
@@ -339,6 +346,7 @@
     <div class="voice-fab" id="voiceFab" onclick="toggleVoice()" style="display:none;">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3z" stroke="#fff" stroke-width="2"/><path d="M19 11a7 7 0 01-14 0M12 18v3" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
     </div>
+    <div class="mini-status-bar" id="miniStatusBar" style="display:none;"></div>
     <div class="tabbar" id="tabbar"></div>
   </div>
   <div class="demo-bar" id="demoBar"></div>
@@ -353,7 +361,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v21 · no more Open state, Prepare is always shown';
+const APP_VERSION = 'v24 · persistent live status bar on every screen';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -523,8 +531,14 @@ function liveDayCurrentItem(nowMs){
   return started[0];
 }
 function liveDayNextItem(nowMs){
-  const upcoming = liveDay.schedule.filter(it => effectiveStartMs(it) > nowMs && !liveDay.doneMeta.has(it.activity.id));
-  return upcoming.length ? upcoming.sort((a,b)=>effectiveStartMs(a)-effectiveStartMs(b))[0] : null;
+  // Deliberately uses the item's REAL start time here, not effectiveStartMs
+  // (which is the leave-by time for travel-based activities). Otherwise,
+  // if a later activity's leave window opens while an earlier one is still
+  // in progress, it silently disappears from "next" — it doesn't yet
+  // qualify as current (the earlier item still wins), but effectiveStartMs
+  // no longer counts it as upcoming either, so it falls into neither.
+  const upcoming = liveDay.schedule.filter(it => it.startMs > nowMs && !liveDay.doneMeta.has(it.activity.id));
+  return upcoming.length ? upcoming.sort((a,b)=>a.startMs-b.startMs)[0] : null;
 }
 /// Which stage a "current" item is in: still time to leave, or actually
 /// underway.
@@ -1398,6 +1412,15 @@ function formatMinutesLong(mins){
   const h = Math.floor(mins/60), m = mins%60;
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
+/// Drops to seconds precision under a minute — rounding to whole minutes
+/// gets misleading right at the end (a real 40 seconds left showing as
+/// "1 min" or "0 min" is exactly the wrong moment to be imprecise).
+/// Returns {big, small} for the ring/countdown displays.
+function countdownParts(ms){
+  ms = Math.max(0, ms);
+  if (ms >= 60000) return { big: String(Math.round(ms/60000)), small: 'min left' };
+  return { big: String(Math.round(ms/1000)), small: 'sec left' };
+}
 
 function screenNow1(){
   // Genuinely live: recomputes the single current state from the real
@@ -1437,6 +1460,8 @@ function screenNow1(){
     const totalLeadMs = leadMin * 60000;
     const pct = totalLeadMs > 0 ? Math.max(0, Math.min(100, (untilLeaveMs/totalLeadMs)*100)) : 0;
     const remainMin = Math.max(0, Math.round(untilLeaveMs / 60000));
+    const leaveBigText = shouldLeaveNow ? 'Now'
+      : (untilLeaveMs < 60000 ? `${Math.round(untilLeaveMs/1000)} sec` : formatMinutesLong(remainMin));
     const arriveTime = new Date(item.startMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
     const prepItems = recommendedPrepItems(item.activity);
     const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(item.activity.location || item.activity.name);
@@ -1460,12 +1485,12 @@ function screenNow1(){
       <div class="leave-in-card">
         <div>
           <div class="lab">${shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN')}</div>
-          <div class="big">${shouldLeaveNow ? 'Now' : formatMinutesLong(remainMin)}</div>
+          <div class="big">${leaveBigText}</div>
           <div class="sub">${isLeave ? `To arrive by ${arriveTime}` : "You're all set"}</div>
         </div>
         <div class="leave-ring" style="border-color:${(shouldLeaveNow||pct<25)?'var(--tight)':'var(--accent)'};">
           ${isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>'}
-          <span>${shouldLeaveNow ? 'Now' : formatMinutesLong(remainMin)}</span>
+          <span>${leaveBigText}</span>
         </div>
       </div>
       ${isLeave
@@ -1480,7 +1505,7 @@ function screenNow1(){
     const totalMs = item.endMs - item.startMs;
     const remainingMs = item.endMs - nowMs;
     const pct = Math.max(0, Math.min(100, (remainingMs/totalMs)*100));
-    const remainingMin = Math.round(remainingMs / 60000);
+    const countdown = countdownParts(remainingMs);
     const finishBy = new Date(item.endMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
     const typeLabel = { focus:'Focus time', meeting:'Meeting', personal:'Personal time', prepare:'Preparation' }[item.activity.type] || 'Activity';
     return `
@@ -1489,7 +1514,7 @@ function screenNow1(){
       <div class="now-card">
         <div class="now-top">
           <div><div class="now-name">${item.activity.name}</div><div class="now-sub">${typeLabel}</div></div>
-          ${ring(pct, 'var(--focus)', 84, remainingMin, 'min left')}
+          ${ring(pct, 'var(--focus)', 84, countdown.big, countdown.small)}
         </div>
         <div class="finish-row">
           <div><div class="lab">Finish by</div><div class="val">${finishBy}</div></div>
@@ -1513,12 +1538,13 @@ function screenNow1(){
   if (stage.type === 'wrapping') {
     const item = stage.item;
     const next = liveDayNextItem(nowMs);
-    const remainingMin = Math.max(0, Math.round((item.endMs - nowMs) / 60000));
+    const remainingMs = Math.max(0, item.endMs - nowMs);
+    const countdown = countdownParts(remainingMs);
     return `
       <div class="status-pill tight"><div class="pdot" style="background:var(--tight)"></div>WRAPPING UP</div>
       <div class="now-card" style="margin-top:12px;">
         <div class="now-name">${item.activity.name}</div>
-        <div class="now-sub">${remainingMin} min left on schedule</div>
+        <div class="now-sub">${countdown.big} ${countdown.small} on schedule</div>
       </div>
       ${next ? `<div class="up-next-label" style="margin-top:10px;">Then: ${next.activity.name} at ${next.activity.time}</div>` : ''}
       <button class="btn-primary" style="margin-top:12px;" onclick="liveDayMarkCurrentDone()">Mark done</button>
@@ -1773,11 +1799,58 @@ const SCREEN_MAP = { plan:screenPlan, addActivity:screenAddActivity, chooseTrave
   now1:screenNow1, atrisk:screenAtRisk, conflict:screenConflict, complete:screenComplete,
   insights:screenInsights, profile:screenProfile, captureDay:screenCaptureDay };
 
+/// A persistent live status strip above the tab bar, visible on every
+/// screen — Plan, Insights, Profile, wherever — not just the Day tab.
+/// This is what actually makes the app feel like it's with you the whole
+/// time, not just when you happen to be looking at the Now screen.
+function renderMiniStatusBar(){
+  const bar = document.getElementById('miniStatusBar');
+  if (!bar) return;
+  if (!liveDay.startedAt || ['now1','atrisk','conflict'].includes(state.screen)) {
+    bar.style.display = 'none';
+    return;
+  }
+  const nowMs = Date.now();
+  const stage = computeCurrentStage(nowMs);
+  let color = 'var(--ontrack)', label = '', sub = '';
+
+  if (stage.type === 'alldone') {
+    label = 'Day complete';
+  } else {
+    const item = stage.item;
+    label = item.activity.name;
+    if (stage.type === 'atrisk') {
+      color = 'var(--risk)';
+      sub = 'AT RISK · +' + formatMMSS(nowMs - item.endMs);
+    } else if (stage.type === 'wrapping') {
+      color = 'var(--tight)';
+      const c = countdownParts(Math.max(0, item.endMs - nowMs));
+      sub = 'Wrapping up · ' + c.big + (c.small.includes('sec') ? 's' : 'm');
+    } else if (stage.type === 'doing') {
+      const c = countdownParts(Math.max(0, item.endMs - nowMs));
+      sub = 'On track · ' + c.big + (c.small.includes('sec') ? 's' : 'm');
+    } else if (stage.type === 'leave') {
+      const untilLeaveMs = Math.max(0, item.leaveByMs - nowMs);
+      if (untilLeaveMs <= 0) { color = 'var(--tight)'; sub = 'Leave now'; }
+      else { const c = countdownParts(untilLeaveMs); sub = 'Leave in ' + c.big + (c.small.includes('sec') ? 's' : 'm'); }
+    } else if (stage.type === 'starting') {
+      color = 'var(--meeting)';
+      const c = countdownParts(Math.max(0, item.startMs - nowMs));
+      sub = 'Starting soon · ' + c.big + (c.small.includes('sec') ? 's' : 'm');
+    }
+  }
+
+  bar.style.display = 'flex';
+  bar.innerHTML = `<div class="msb-dot" style="background:${color};"></div><div class="msb-text">${label}</div><div class="msb-sub">${sub}</div>`;
+  bar.onclick = () => goDay();
+}
+
 function render(){
   document.getElementById('screen').innerHTML = SCREEN_MAP[state.screen]();
   renderChrome();
   renderRail();
   renderDemoBar();
+  renderMiniStatusBar();
 }
 
 // The live countdown screens re-render every second, but only their own
@@ -1791,6 +1864,7 @@ function renderScreenOnly(){
 
 setInterval(() => {
   if (['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) renderScreenOnly();
+  renderMiniStatusBar();
 }, 1000);
 
 // iOS suspends this page's JavaScript — including the interval above —
@@ -1799,8 +1873,9 @@ setInterval(() => {
 // fire. This catches it up the instant the page becomes visible again,
 // rather than making you wait or wonder if it's broken.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && ['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) {
-    renderScreenOnly();
+  if (!document.hidden && liveDay.startedAt) {
+    if (['now1','atrisk','conflict'].includes(state.screen)) renderScreenOnly();
+    renderMiniStatusBar();
   }
 });
 
