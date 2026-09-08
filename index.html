@@ -353,7 +353,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v18 · exact Now/Prepare templates';
+const APP_VERSION = 'v21 · no more Open state, Prepare is always shown';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -561,12 +561,11 @@ function computeCurrentStage(nowMs){
   }
   const next = liveDayNextItem(nowMs);
   if (!next) return { type:'alldone' };
-  const anchorMs = effectiveStartMs(next);
-  const leadMin = prepLeadMinutesFor((next.endMs - next.startMs) / 60000);
-  if (leadMin > 0 && nowMs >= anchorMs - leadMin*60000) {
-    return { type: next.leaveByMs != null ? 'leave' : 'starting', item: next };
-  }
-  return { type:'gap', item: next };
+  // No separate "open/free time" state — Prepare is the permanent state
+  // whenever nothing is actively running, all the way from right after
+  // the previous activity to right before the next one, regardless of
+  // how far off it is. A blank "you have time" screen isn't guidance.
+  return { type: next.leaveByMs != null ? 'leave' : 'starting', item: next };
 }
 
 /// Real Performance Capital: earned by actually keeping commitments, more
@@ -1391,6 +1390,14 @@ function formatMMSS(ms){
   const s = total%60;
   return `${m}:${s.toString().padStart(2,'0')}`;
 }
+/// A readable "in Xh Ym" / "X min" format for the Prepare screen, which
+/// can now be showing a countdown hours away rather than only minutes.
+function formatMinutesLong(mins){
+  mins = Math.max(0, Math.round(mins));
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins/60), m = mins%60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
 
 function screenNow1(){
   // Genuinely live: recomputes the single current state from the real
@@ -1412,37 +1419,35 @@ function screenNow1(){
     `;
   }
 
-  if (stage.type === 'gap') {
-    const item = stage.item;
-    const untilNext = effectiveStartMs(item) - nowMs;
-    return `
-      <div class="status-pill gap"><div class="pdot" style="background:var(--ink-faint)"></div>OPEN</div>
-      <div class="now-card" style="margin-top:12px;">
-        <div class="now-name" style="font-size:26px;">${formatMMSS(untilNext)}</div>
-        <div class="now-sub">free until next commitment</div>
-      </div>
-      <div class="up-next-card" style="margin-top:10px;">
-        <div class="up-next-row"><div class="up-next-name">${item.activity.name}</div><div class="up-next-time">${item.activity.time}</div></div>
-      </div>
-    `;
-  }
+  // "gap" no longer exists as a state — nothing to render here now.
 
   if (stage.type === 'starting' || stage.type === 'leave') {
     const item = stage.item;
     const isLeave = stage.type === 'leave';
     const untilStart = item.startMs - nowMs;
+    // For a travel-based activity, the thing that should count down is the
+    // real leave deadline (leaveByMs) — not the task's own start time.
+    // Those are different moments: if the trip only takes 2 minutes and
+    // the task starts in 2 minutes, you need to leave now, not "in 2 min".
+    const untilLeaveMs = isLeave ? Math.max(0, item.leaveByMs - nowMs) : untilStart;
+    const shouldLeaveNow = isLeave && untilLeaveMs <= 0;
     const leadMin = isLeave
       ? Math.round((item.startMs - item.leaveByMs) / 60000)
       : prepLeadMinutesFor((item.endMs - item.startMs) / 60000);
     const totalLeadMs = leadMin * 60000;
-    const pct = totalLeadMs > 0 ? Math.max(0, Math.min(100, (untilStart/totalLeadMs)*100)) : 0;
-    const remainMin = Math.max(0, Math.round(untilStart / 60000));
+    const pct = totalLeadMs > 0 ? Math.max(0, Math.min(100, (untilLeaveMs/totalLeadMs)*100)) : 0;
+    const remainMin = Math.max(0, Math.round(untilLeaveMs / 60000));
+    const arriveTime = new Date(item.startMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
     const prepItems = recommendedPrepItems(item.activity);
     const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(item.activity.location || item.activity.name);
     return `
       <div class="prepare-hero">
         <h2>Almost there!</h2>
         <p>Time to prepare for your next important commitment.</p>
+      </div>
+      <div class="up-next-card" style="margin-bottom:14px;">
+        <div class="up-next-row"><div class="up-next-name">${item.activity.name}</div><div class="up-next-time">${item.activity.time}</div></div>
+        ${item.activity.location ? `<div class="up-next-label" style="margin-top:4px;">${item.activity.location}</div>` : ''}
       </div>
       <div class="prep-now-card">
         <div class="prep-now-head"><b>Prepare Now</b><span>Get ready for what's next.</span></div>
@@ -1454,13 +1459,13 @@ function screenNow1(){
       </div>
       <div class="leave-in-card">
         <div>
-          <div class="lab">${isLeave ? 'LEAVE IN' : 'STARTS IN'}</div>
-          <div class="big">${remainMin} min</div>
-          <div class="sub">${isLeave ? 'To arrive on time' : "You're all set"}</div>
+          <div class="lab">${shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN')}</div>
+          <div class="big">${shouldLeaveNow ? 'Now' : formatMinutesLong(remainMin)}</div>
+          <div class="sub">${isLeave ? `To arrive by ${arriveTime}` : "You're all set"}</div>
         </div>
-        <div class="leave-ring" style="border-color:${pct<25?'var(--tight)':'var(--accent)'};">
+        <div class="leave-ring" style="border-color:${(shouldLeaveNow||pct<25)?'var(--tight)':'var(--accent)'};">
           ${isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>'}
-          <span>${remainMin} min</span>
+          <span>${shouldLeaveNow ? 'Now' : formatMinutesLong(remainMin)}</span>
         </div>
       </div>
       ${isLeave
@@ -1787,6 +1792,17 @@ function renderScreenOnly(){
 setInterval(() => {
   if (['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) renderScreenOnly();
 }, 1000);
+
+// iOS suspends this page's JavaScript — including the interval above —
+// the moment you leave to open Maps (or any other app). Without this,
+// coming back shows a stale, frozen screen until the next tick happens to
+// fire. This catches it up the instant the page becomes visible again,
+// rather than making you wait or wonder if it's broken.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && ['now1','atrisk','conflict'].includes(state.screen) && liveDay.startedAt) {
+    renderScreenOnly();
+  }
+});
 
 // Only safe to call now that every let/const it touches (activities,
 // capturedDays, vision) has actually been declared — calling this earlier
