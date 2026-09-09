@@ -298,7 +298,6 @@
     display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer;
     border-top:1px solid var(--border); background:#fff;
   }
-  .mini-status-bar .msb-dot{ width:9px; height:9px; border-radius:50%; flex-shrink:0; }
   .mini-status-bar .msb-text{ flex:1; min-width:0; font-size:12.5px; font-weight:700; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .mini-status-bar .msb-sub{ font-size:11px; color:var(--ink-dim); font-weight:600; flex-shrink:0; }
   .voice-fab{
@@ -361,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v25 · status bar now shows on the Prepare screen too';
+const APP_VERSION = 'v27 · timer reorder, structure fix, more notifications, prep notes';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -551,7 +550,7 @@ function stageFor(item, nowMs){
 /// an activity's real end — same graduated logic as the notification
 /// timing, so the screen and the alerts agree with each other.
 function finalStretchMinutesFor(durationMin){
-  return durationMin >= 15 ? Math.min(5, Math.round(durationMin * 0.15)) : 0;
+  return durationMin >= 6 ? Math.min(5, Math.round(durationMin * 0.15)) : 0;
 }
 
 /// The single live state the Now screen is in right now — always exactly
@@ -598,6 +597,14 @@ const PREP_POOL = {
   personal:['Grab what you need', 'Stay focused', 'Take a breath before you go'],
 };
 function recommendedPrepItems(activity){
+  // Real notes the person actually typed always win over generic
+  // suggestions — one line per checklist item.
+  if (activity.prepNotes && activity.prepNotes.trim()) {
+    const lines = activity.prepNotes.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length > 0) {
+      return lines.map((label, i) => ({ id: activity.id + '_userprep_' + i, label }));
+    }
+  }
   const list = PREP_POOL[activity.type] || ['Stay focused', 'Grab your bag', 'Double-check the time'];
   return list.map((label, i) => ({ id: activity.id + '_prep_' + i, label }));
 }
@@ -642,6 +649,7 @@ function liveDayMarkCurrentDone(){
     return;
   }
   render();
+  announceEnteringPrepare();
 }
 
 /// Extends the current item's window when someone chooses "give it more
@@ -733,7 +741,7 @@ function scheduleNotificationsFor(schedule, nowMs){
     // A halfway check-in, but only for activities long enough that it
     // actually means something — a quiet reassurance ping, not a nag.
     // Skips items already past their halfway point (e.g. edits mid-day).
-    if (durationMin >= 30) {
+    if (durationMin >= 10) {
       const halfwayMs = item.startMs + (item.endMs - item.startMs) / 2;
       const halfwayDelay = halfwayMs - nowMs;
       if (halfwayDelay > 0) {
@@ -749,7 +757,7 @@ function scheduleNotificationsFor(schedule, nowMs){
     // A final-stretch nudge in the last few minutes of longer activities —
     // a second real touchpoint alongside the halfway check-in, still
     // graduated so short activities don't get either.
-    if (durationMin >= 15) {
+    if (durationMin >= 6) {
       const stretchMin = Math.min(5, Math.round(durationMin * 0.15));
       const stretchMs = item.endMs - stretchMin*60*1000;
       const stretchDelay = stretchMs - nowMs;
@@ -1022,7 +1030,7 @@ function activityTypeFor(priority){
 function pushFinishedActivity(fields, travelMin){
   const id = 'a' + Date.now() + Math.random().toString(36).slice(2,6);
   activities.push({ id, time: fields.time, name: fields.title, dur: fields.dur,
-    priority: newActPriority, location: fields.location, travelMin,
+    priority: newActPriority, location: fields.location, travelMin, prepNotes: fields.prepNotes || '',
     type: activityTypeFor(newActPriority) });
   newActPriority = 'signal';
   saveToStorage();
@@ -1034,10 +1042,11 @@ async function saveActivity(){
   const time = document.getElementById('newActTime').value.trim() || '—';
   const dur = document.getElementById('newActDur').value.trim() || '30 min';
   const location = document.getElementById('newActLocation').value.trim();
+  const prepNotes = document.getElementById('newActPrep').value.trim();
   let travelMin = document.getElementById('newActTravel').value.trim();
   if(!title){ toast('Give the activity a title first'); return; }
 
-  const fields = { title, time, dur, location };
+  const fields = { title, time, dur, location, prepNotes };
 
   if (location && !travelMin) {
     toast('Finding travel options…');
@@ -1303,6 +1312,8 @@ function screenAddActivity(){
     <div class="field"><label>Time — a real clock time, e.g. 2:05 PM or 14:05</label><input id="newActTime" type="text" placeholder="e.g. 2:05 PM"></div>
     <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">This has to be an actual time for Start Day's live countdown and real notifications to use it. Anything else (or left blank) just won't show up in the live test.</div>
     <div class="field"><label>Duration</label><input id="newActDur" type="text" placeholder="e.g. 45 min"></div>
+    <div class="field"><label>Preparation notes (optional)</label><textarea id="newActPrep" rows="3" placeholder="One per line — e.g. Bring the signed contract&#10;Review the deck&#10;Charge laptop"></textarea></div>
+    <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">Each line becomes a real, tappable checklist item on the Prepare screen. Leave it blank and SIMA suggests generic ones based on the activity type instead.</div>
     <div class="field"><label>Location (optional)</label><input id="newActLocation" type="text" placeholder="e.g. Meridian Client HQ, 4th Floor"></div>
     <div class="field"><label>Travel time in minutes (optional)</label><input id="newActTravel" type="text" placeholder="Leave blank to look it up automatically"></div>
     <div class="subtitle" style="margin-top:-10px;margin-bottom:14px;font-size:11.5px;">Give it a Location and leave this blank, and SIMA will find your real driving time to that address (one location permission prompt) instead of guessing. Type a number here to skip that and set it yourself.</div>
@@ -1361,11 +1372,12 @@ function screenStructure(){
   `;
 }
 
+const STRUCTURE_NAMES = { balanced:'Balanced', focus:'Focus First', meetings:'Meetings First', outabout:'Out & About', custom:'Custom' };
 function screenPreview(){
   const sorted = [...activities].sort((a,b)=> a.time.localeCompare(b.time));
   return `
     <div class="preview-header">
-      <div class="subtitle" style="margin:6px 0;">Today · Meetings First</div>
+      <div class="subtitle" style="margin:6px 0;">Today · ${STRUCTURE_NAMES[state.structure] || 'Your structure'}</div>
     </div>
     ${sorted.map(a=>`
       <div class="t-row">
@@ -1391,11 +1403,27 @@ function screenPreview(){
   `;
 }
 
+/// Fires a real, immediate notification the moment you land in Prepare —
+/// a second real touchpoint alongside the pre-scheduled heads-up, since
+/// that one fires at a computed lead time and this one fires the instant
+/// you're actually looking at the Prepare screen.
+function announceEnteringPrepare(){
+  if (notifStatus !== 'granted') return;
+  const stg = computeCurrentStage(Date.now());
+  if (stg.type === 'leave' || stg.type === 'starting') {
+    fireNotification(
+      `Preparing: ${stg.item.activity.name}`,
+      stg.type === 'leave' ? "You'll need to head out soon — check the Prepare screen." : 'Check the Prepare screen to get ready.'
+    );
+  }
+}
+
 function startDayLive(){
   if (!firstUseDate) firstUseDate = new Date().toISOString();
   scheduleRealNotifications();
   saveToStorage();
   go('now1');
+  announceEnteringPrepare();
 }
 
 function formatMMSS(ms){
@@ -1474,14 +1502,6 @@ function screenNow1(){
         <div class="up-next-row"><div class="up-next-name">${item.activity.name}</div><div class="up-next-time">${item.activity.time}</div></div>
         ${item.activity.location ? `<div class="up-next-label" style="margin-top:4px;">${item.activity.location}</div>` : ''}
       </div>
-      <div class="prep-now-card">
-        <div class="prep-now-head"><b>Prepare Now</b><span>Get ready for what's next.</span></div>
-        ${prepItems.map(it => `
-          <div class="prep-check-row" onclick="togglePrepCheck('${it.id}')">
-            <div class="check-circle ${prepChecks[it.id]?'on':''}">${prepChecks[it.id]?I.check:''}</div>
-            <div class="check-label ${prepChecks[it.id]?'on':''}">${it.label}</div>
-          </div>`).join('')}
-      </div>
       <div class="leave-in-card">
         <div>
           <div class="lab">${shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN')}</div>
@@ -1492,6 +1512,14 @@ function screenNow1(){
           ${isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>'}
           <span>${leaveBigText}</span>
         </div>
+      </div>
+      <div class="prep-now-card">
+        <div class="prep-now-head"><b>Prepare Now</b><span>Get ready for what's next.</span></div>
+        ${prepItems.map(it => `
+          <div class="prep-check-row" onclick="togglePrepCheck('${it.id}')">
+            <div class="check-circle ${prepChecks[it.id]?'on':''}">${prepChecks[it.id]?I.check:''}</div>
+            <div class="check-label ${prepChecks[it.id]?'on':''}">${it.label}</div>
+          </div>`).join('')}
       </div>
       ${isLeave
         ? `<a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`
@@ -1823,36 +1851,45 @@ function renderMiniStatusBar(){
   }
   const nowMs = Date.now();
   const stage = computeCurrentStage(nowMs);
-  let color = 'var(--ontrack)', label = '', sub = '';
+  let pillClass = 'ontrack', pillLabel = '', activityName = '', countdownText = '';
 
   if (stage.type === 'alldone') {
-    label = 'Day complete';
+    pillLabel = 'ALL DONE';
   } else {
     const item = stage.item;
-    label = item.activity.name;
+    activityName = item.activity.name;
     if (stage.type === 'atrisk') {
-      color = 'var(--risk)';
-      sub = 'AT RISK · +' + formatMMSS(nowMs - item.endMs);
+      pillClass = 'risk'; pillLabel = 'AT RISK';
+      countdownText = '+' + formatMMSS(nowMs - item.endMs) + ' over';
     } else if (stage.type === 'wrapping') {
-      color = 'var(--tight)';
+      pillClass = 'tight'; pillLabel = 'WRAPPING UP';
       const c = countdownParts(Math.max(0, item.endMs - nowMs));
-      sub = 'Wrapping up · ' + c.big + (c.small.includes('sec') ? 's' : 'm');
+      countdownText = c.big + (c.small.includes('sec') ? 's' : 'm') + ' left';
     } else if (stage.type === 'doing') {
+      pillClass = 'ontrack'; pillLabel = 'ON TRACK';
       const c = countdownParts(Math.max(0, item.endMs - nowMs));
-      sub = 'On track · ' + c.big + (c.small.includes('sec') ? 's' : 'm');
+      countdownText = c.big + (c.small.includes('sec') ? 's' : 'm') + ' left';
     } else if (stage.type === 'leave') {
       const untilLeaveMs = Math.max(0, item.leaveByMs - nowMs);
-      if (untilLeaveMs <= 0) { color = 'var(--tight)'; sub = 'Leave now'; }
-      else { const c = countdownParts(untilLeaveMs); sub = 'Leave in ' + c.big + (c.small.includes('sec') ? 's' : 'm'); }
+      if (untilLeaveMs <= 0) { pillClass = 'tight'; pillLabel = 'LEAVE NOW'; }
+      else {
+        pillClass = 'ontrack'; pillLabel = 'LEAVE SOON';
+        const c = countdownParts(untilLeaveMs);
+        countdownText = c.big + (c.small.includes('sec') ? 's' : 'm');
+      }
     } else if (stage.type === 'starting') {
-      color = 'var(--meeting)';
+      pillClass = 'starting'; pillLabel = 'STARTING SOON';
       const c = countdownParts(Math.max(0, item.startMs - nowMs));
-      sub = 'Starting soon · ' + c.big + (c.small.includes('sec') ? 's' : 'm');
+      countdownText = c.big + (c.small.includes('sec') ? 's' : 'm');
     }
   }
 
   bar.style.display = 'flex';
-  bar.innerHTML = `<div class="msb-dot" style="background:${color};"></div><div class="msb-text">${label}</div><div class="msb-sub">${sub}</div>`;
+  bar.innerHTML = `
+    <div class="status-pill ${pillClass}"><div class="pdot" style="background:currentColor"></div>${pillLabel}</div>
+    ${activityName ? `<div class="msb-text">${activityName}</div>` : ''}
+    ${countdownText ? `<div class="msb-sub">${countdownText}</div>` : ''}
+  `;
   bar.onclick = () => goDay();
 }
 
