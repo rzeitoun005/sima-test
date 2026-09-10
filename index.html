@@ -360,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v27 · timer reorder, structure fix, more notifications, prep notes';
+const APP_VERSION = 'v28 · mid-task notifications for every task, no minimum length';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -548,9 +548,11 @@ function stageFor(item, nowMs){
 
 /// How many minutes of "final stretch" a wrapping-up warning gets before
 /// an activity's real end — same graduated logic as the notification
-/// timing, so the screen and the alerts agree with each other.
+/// timing, so the screen and the alerts agree with each other. No minimum
+/// duration gate: every task gets this, floored at 1 minute so even a
+/// very short task still gets a real final-stretch moment.
 function finalStretchMinutesFor(durationMin){
-  return durationMin >= 6 ? Math.min(5, Math.round(durationMin * 0.15)) : 0;
+  return Math.max(1, Math.min(5, Math.round(durationMin * 0.15)));
 }
 
 /// The single live state the Now screen is in right now — always exactly
@@ -738,10 +740,11 @@ function scheduleNotificationsFor(schedule, nowMs){
       scheduledTimers.push(id);
       item.timers.push(id);
     }
-    // A halfway check-in, but only for activities long enough that it
-    // actually means something — a quiet reassurance ping, not a nag.
-    // Skips items already past their halfway point (e.g. edits mid-day).
-    if (durationMin >= 10) {
+    // Halfway check-in — every task, no minimum length. On a very short
+    // task this lands close to "final stretch" below, and that's fine:
+    // short tasks are exactly where the person asked for more signal, not
+    // less.
+    {
       const halfwayMs = item.startMs + (item.endMs - item.startMs) / 2;
       const halfwayDelay = halfwayMs - nowMs;
       if (halfwayDelay > 0) {
@@ -754,11 +757,10 @@ function scheduleNotificationsFor(schedule, nowMs){
         item.timers.push(id);
       }
     }
-    // A final-stretch nudge in the last few minutes of longer activities —
-    // a second real touchpoint alongside the halfway check-in, still
-    // graduated so short activities don't get either.
-    if (durationMin >= 6) {
-      const stretchMin = Math.min(5, Math.round(durationMin * 0.15));
+    // A final-stretch nudge, also with no minimum length now — floored at
+    // 1 minute so it still means something on a very short task.
+    {
+      const stretchMin = finalStretchMinutesFor(durationMin);
       const stretchMs = item.endMs - stretchMin*60*1000;
       const stretchDelay = stretchMs - nowMs;
       if (stretchDelay > 0) {
