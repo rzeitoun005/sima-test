@@ -360,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v30 · every Prepare tap is a start signal, more notifications';
+const APP_VERSION = 'v31 · Navigate=left not started; no-loc silence=late';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -486,7 +486,7 @@ function clockTimeToMsToday(clock, referenceMs){
 /// time) plus its Duration — this is what the Now screen reads from.
 /// Activities without a real, parseable time are excluded from live
 /// tracking, since there's nothing real to anchor them to.
-let liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map() };
+let liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map(), leaveTaps: new Map() };
 let atRiskShownFor = new Set();
 let pendingConflict = null; // set when marking done reveals we're already late for what's next
 
@@ -505,7 +505,7 @@ function buildLiveSchedule(nowMs){
     const parsedTravel = parseInt(a.travelMin, 10);
     const travelMin = a.location ? (!isNaN(parsedTravel) && parsedTravel > 0 ? parsedTravel : 15) : 0;
     const leaveByMs = (a.location && travelMin > 0) ? (startMs - travelMin*60*1000) : null;
-    items.push({ activity: a, startMs, endMs, leaveByMs, timers: [] });
+    items.push({ activity: a, startMs, endMs, leaveByMs, travelMin, timers: [] });
   });
   items.sort((x,y) => x.startMs - y.startMs);
   return items;
@@ -517,30 +517,53 @@ function effectiveStartMs(item){
   return item.leaveByMs != null ? item.leaveByMs : item.startMs;
 }
 
+/// An honest estimate of when someone actually arrived, built from two
+/// real facts: the moment they tapped Navigate, plus the real travel time
+/// for that trip — not a guess, and not an assumption that tapping means
+/// arriving instantly. Returns null until Navigate has actually been
+/// tapped, since without that there's nothing real to estimate from.
+function estimatedArrivalMs(item){
+  const leaveTapMs = liveDay.leaveTaps.get(item.activity.id);
+  if (leaveTapMs == null) return null;
+  return leaveTapMs + item.travelMin*60*1000;
+}
+
 /// "Current" is the earliest activity that has reached its effective start
 /// and hasn't been marked done — deliberately independent of whether its
 /// window has technically ended. This is what lets the status genuinely go
 /// AT RISK and stay that way, instead of silently jumping to "next" the
 /// moment the clock passes the end time. The person decides when they're
 /// done, not the clock — same rule the rest of the app follows.
+/// If Navigate has been tapped for a travel-based item, its real
+/// estimated-arrival time (leave tap + travel time) wins over the plain
+/// clock-based guess — that's a fact, not an assumption.
 function liveDayCurrentItem(nowMs){
-  const started = liveDay.schedule.filter(it =>
-    (effectiveStartMs(it) <= nowMs || liveDay.manualStarts.has(it.activity.id))
-    && !liveDay.doneMeta.has(it.activity.id)
-  );
+  const started = liveDay.schedule.filter(it => {
+    if (liveDay.doneMeta.has(it.activity.id)) return false;
+    const arrival = estimatedArrivalMs(it);
+    if (arrival != null) return nowMs >= arrival;
+    return effectiveStartMs(it) <= nowMs || liveDay.manualStarts.has(it.activity.id);
+  });
   if (started.length === 0) return null;
-  started.sort((a,b) => effectiveStartMs(a) - effectiveStartMs(b));
+  started.sort((a,b) => (estimatedArrivalMs(a) ?? effectiveStartMs(a)) - (estimatedArrivalMs(b) ?? effectiveStartMs(b)));
   return started[0];
 }
-/// An honest, OPTIONAL signal that someone has actually started — fired by
-/// whichever Prepare-page CTA they tap: "Start Activity" for a no-location
-/// item, or "Continue to Leave" (Navigate) for a travel-based one. Never a
-/// new button, never required: if nobody presses anything, the app keeps
+/// An honest, OPTIONAL signal for a no-location activity: "I've actually
+/// started this." Never required — if nobody presses it, the app keeps
 /// working exactly as before, silently assuming plan-equals-reality at the
-/// scheduled clock time. Pressing it just adds a real fact on top — and
-/// absence is never treated as evidence of the opposite, only as "unknown."
+/// scheduled clock time. Pressing it just adds a real fact on top.
 function manualStartActivity(id){
   liveDay.manualStarts.set(id, Date.now());
+  render();
+}
+/// A different kind of signal, for travel-based activities: tapping
+/// Navigate doesn't mean the activity itself has started — it means SIMA
+/// now knows the person has actually left. Combined with the real travel
+/// time for that trip, that's enough to honestly estimate when they'll
+/// arrive (and so, when the activity itself really begins) — not an
+/// instant jump to "started" the moment the tap happens.
+function manualLeaveActivity(id){
+  liveDay.leaveTaps.set(id, Date.now());
   render();
 }
 function liveDayNextItem(nowMs){
@@ -554,13 +577,15 @@ function liveDayNextItem(nowMs){
   return upcoming.length ? upcoming.sort((a,b)=>a.startMs-b.startMs)[0] : null;
 }
 /// Which stage a "current" item is in: still time to leave, or actually
-/// underway. A manual start tap (Start Activity, or Continue to Leave for
-/// a travel-based item) is treated as a full, honest "this has begun"
-/// signal — it jumps straight to Doing even if the clock says otherwise,
-/// same idea as an early "Started N min early" status. No separate
-/// "in transit" stage: once someone's tapped the CTA, they're on it.
+/// underway. A no-location manual start jumps straight to Doing. A
+/// travel-based item only reaches Doing once its estimated arrival time
+/// (real leave tap + real travel time) has actually passed — not the
+/// instant Navigate gets tapped, since tapping Navigate means "I've left",
+/// not "I've arrived."
 function stageFor(item, nowMs){
   if (liveDay.manualStarts.has(item.activity.id)) return 'doing';
+  const arrival = estimatedArrivalMs(item);
+  if (arrival != null) return nowMs >= arrival ? 'doing' : 'leave';
   if (item.leaveByMs != null && nowMs < item.startMs) return 'leave';
   return 'doing';
 }
@@ -829,7 +854,7 @@ function scheduleRealNotifications(){
   clearScheduledNotifications();
   const nowMs = Date.now();
   const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map(), manualStarts: new Map() };
+  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map(), manualStarts: new Map(), leaveTaps: new Map() };
   atRiskShownFor = new Set();
   pendingConflict = null;
   scheduleNotificationsFor(schedule, nowMs);
@@ -845,7 +870,7 @@ function syncLiveSchedule(){
   clearScheduledNotifications();
   const nowMs = Date.now();
   const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta, manualStarts: liveDay.manualStarts };
+  liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta, manualStarts: liveDay.manualStarts, leaveTaps: liveDay.leaveTaps };
   scheduleNotificationsFor(schedule, nowMs);
 }
 
@@ -954,7 +979,7 @@ function restart(){
   lastNavScreen = 'now1';
   captureSwatchIndex = 0;
   voiceOpen = false;
-  liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map() };
+  liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map(), leaveTaps: new Map() };
   atRiskShownFor = new Set();
   pendingConflict = null;
   saveToStorage();
@@ -1525,6 +1550,7 @@ function screenNow1(){
   if (stage.type === 'starting' || stage.type === 'leave') {
     const item = stage.item;
     const isLeave = stage.type === 'leave';
+    const hasLeft = isLeave && liveDay.leaveTaps.has(item.activity.id);
     const untilStart = item.startMs - nowMs;
     // For a travel-based activity, the thing that should count down is the
     // real leave deadline (leaveByMs) — not the task's own start time.
@@ -1541,6 +1567,13 @@ function screenNow1(){
     const leaveBigText = shouldLeaveNow ? 'Now'
       : (untilLeaveMs < 60000 ? `${Math.round(untilLeaveMs/1000)} sec` : formatMinutesLong(remainMin));
     const arriveTime = new Date(item.startMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+    // Once Navigate's been tapped, we have a real fact (when they left) and
+    // a real estimate (when they'll arrive) — worth showing honestly
+    // instead of continuing to display the pre-departure "leave in" clock,
+    // which no longer means anything once they're already on the way.
+    const arrival = hasLeft ? estimatedArrivalMs(item) : null;
+    const untilArriveMs = arrival != null ? Math.max(0, arrival - nowMs) : 0;
+    const arriveBigText = untilArriveMs < 60000 ? `${Math.round(untilArriveMs/1000)} sec` : formatMinutesLong(Math.round(untilArriveMs/60000));
     const prepItems = recommendedPrepItems(item.activity);
     const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(item.activity.location || item.activity.name);
     return `
@@ -1554,13 +1587,13 @@ function screenNow1(){
       </div>
       <div class="leave-in-card">
         <div>
-          <div class="lab">${shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN')}</div>
-          <div class="big">${leaveBigText}</div>
-          <div class="sub">${isLeave ? `To arrive by ${arriveTime}` : "You're all set"}</div>
+          <div class="lab">${hasLeft ? 'ARRIVING IN' : (shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN'))}</div>
+          <div class="big">${hasLeft ? arriveBigText : leaveBigText}</div>
+          <div class="sub">${hasLeft ? "You're on your way" : (isLeave ? `To arrive by ${arriveTime}` : "You're all set")}</div>
         </div>
-        <div class="leave-ring" style="border-color:${(shouldLeaveNow||pct<25)?'var(--tight)':'var(--accent)'};">
+        <div class="leave-ring" style="border-color:${hasLeft ? 'var(--accent)' : ((shouldLeaveNow||pct<25)?'var(--tight)':'var(--accent)')};">
           ${isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>'}
-          <span>${leaveBigText}</span>
+          <span>${hasLeft ? arriveBigText : leaveBigText}</span>
         </div>
       </div>
       <div class="prep-now-card">
@@ -1572,7 +1605,9 @@ function screenNow1(){
           </div>`).join('')}
       </div>
       ${isLeave
-        ? `<a href="${mapsUrl}" target="_blank" onclick="manualStartActivity('${item.activity.id}')" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`
+        ? (hasLeft
+            ? `<a href="${mapsUrl}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Open Maps again →</a>`
+            : `<a href="${mapsUrl}" target="_blank" onclick="manualLeaveActivity('${item.activity.id}')" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`)
         : `<button class="btn-primary" onclick="manualStartActivity('${item.activity.id}')">Start Activity →</button>`}
     `;
   }
@@ -1586,15 +1621,28 @@ function screenNow1(){
     const countdown = countdownParts(remainingMs);
     const finishBy = new Date(item.endMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
     const typeLabel = { focus:'Focus time', meeting:'Meeting', personal:'Personal time', prepare:'Preparation' }[item.activity.type] || 'Activity';
-    // If someone used the optional "Start Activity" button, we have a real
-    // fact about when this genuinely began — worth being honest about
-    // rather than always claiming "On Track" the moment the clock hits
-    // the scheduled time regardless of what actually happened.
+    // A real "when did this actually begin" fact, from whichever signal
+    // applies: the no-location Start Activity tap, or (for a travel-based
+    // item) the estimated arrival built from the real Navigate-tap time
+    // plus real travel time. Worth being honest about rather than always
+    // claiming "On Track" the moment the clock hits the scheduled time
+    // regardless of what actually happened.
     const manualStartMs = liveDay.manualStarts.get(item.activity.id);
-    const startDeltaMin = manualStartMs != null ? Math.round((manualStartMs - item.startMs) / 60000) : null;
+    const actualStartMs = manualStartMs != null ? manualStartMs : estimatedArrivalMs(item);
+    const startDeltaMin = actualStartMs != null ? Math.round((actualStartMs - item.startMs) / 60000) : null;
     let statusLabel = 'On Track', statusColor = 'var(--ontrack)';
     if (startDeltaMin != null && startDeltaMin >= 1) { statusLabel = `Started ${startDeltaMin} min late`; statusColor = 'var(--tight)'; }
     else if (startDeltaMin != null && startDeltaMin <= -1) { statusLabel = `Started ${Math.abs(startDeltaMin)} min early`; statusColor = 'var(--ontrack)'; }
+    else if (actualStartMs == null && !item.activity.location && nowMs > item.startMs) {
+      // For a no-location task specifically: nobody tapped Start Activity,
+      // and the scheduled time has already passed. Unlike a travel-based
+      // item, there's no other real-world signal to fall back on here —
+      // so, per how this is meant to work, silence past the scheduled
+      // time itself counts as "not actually started," not as "on track."
+      const lateMin = Math.max(1, Math.round((nowMs - item.startMs) / 60000));
+      statusLabel = `Not started — ${lateMin} min late`;
+      statusColor = 'var(--tight)';
+    }
     return `
       ${journeyPath()}
       <div class="now-pill">NOW</div>
