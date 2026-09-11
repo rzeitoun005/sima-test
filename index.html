@@ -360,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v31 · Navigate=left not started; no-loc silence=late';
+const APP_VERSION = 'v32 · live day survives app reload / eviction';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -398,6 +398,24 @@ function saveToStorage(){
     localStorage.setItem('sima_history', JSON.stringify(dayHistory));
     localStorage.setItem('sima_capital', JSON.stringify(performanceCapital));
     localStorage.setItem('sima_first_use', JSON.stringify(firstUseDate));
+    // Persist the live day itself — this is what survives iOS fully
+    // evicting the tab from memory partway through a real day (locking
+    // the phone, a long call, switching to Maps). Without this, reopening
+    // after an eviction looked like the whole day had silently reset.
+    // Maps don't survive JSON directly, so they're stored as [id, value]
+    // arrays and rebuilt on load. Only the real facts (when things were
+    // marked done/started/left) need saving — the schedule itself gets
+    // rebuilt fresh from `activities`, which are already persisted.
+    if (liveDay.startedAt) {
+      localStorage.setItem('sima_liveday', JSON.stringify({
+        startedAt: liveDay.startedAt,
+        doneMeta: Array.from(liveDay.doneMeta.entries()),
+        manualStarts: Array.from(liveDay.manualStarts.entries()),
+        leaveTaps: Array.from(liveDay.leaveTaps.entries()),
+      }));
+    } else {
+      localStorage.removeItem('sima_liveday');
+    }
   } catch(e){ console.warn('Storage unavailable:', e); }
 }
 function loadFromStorage(){
@@ -414,6 +432,33 @@ function loadFromStorage(){
     if (h) dayHistory = JSON.parse(h);
     if (cap) performanceCapital = JSON.parse(cap);
     if (fu) firstUseDate = JSON.parse(fu);
+    // Rehydrate a live day that was genuinely in progress when the tab got
+    // evicted — but only if it's still the same calendar day. A live day
+    // left over from yesterday isn't a session to restore, it's stale
+    // state that would just be confusing to resurrect.
+    const ld = localStorage.getItem('sima_liveday');
+    if (ld) {
+      const parsed = JSON.parse(ld);
+      const nowMs = Date.now();
+      const sameDay = new Date(parsed.startedAt).toDateString() === new Date(nowMs).toDateString();
+      if (sameDay) {
+        const schedule = buildLiveSchedule(nowMs);
+        liveDay = {
+          startedAt: parsed.startedAt,
+          schedule,
+          doneMeta: new Map(parsed.doneMeta),
+          manualStarts: new Map(parsed.manualStarts),
+          leaveTaps: new Map(parsed.leaveTaps),
+        };
+        // The original setTimeout timers didn't survive the reload — only
+        // the real facts did. Re-arm whatever notifications are still
+        // ahead of us; scheduleNotificationsFor already skips anything
+        // already marked done.
+        if (notifStatus === 'granted') scheduleNotificationsFor(schedule, nowMs);
+      } else {
+        localStorage.removeItem('sima_liveday');
+      }
+    }
   } catch(e){ console.warn('Storage unavailable:', e); }
 }
 
@@ -554,6 +599,7 @@ function liveDayCurrentItem(nowMs){
 /// scheduled clock time. Pressing it just adds a real fact on top.
 function manualStartActivity(id){
   liveDay.manualStarts.set(id, Date.now());
+  saveToStorage();
   render();
 }
 /// A different kind of signal, for travel-based activities: tapping
@@ -564,6 +610,7 @@ function manualStartActivity(id){
 /// instant jump to "started" the moment the tap happens.
 function manualLeaveActivity(id){
   liveDay.leaveTaps.set(id, Date.now());
+  saveToStorage();
   render();
 }
 function liveDayNextItem(nowMs){
@@ -725,6 +772,7 @@ function resolveConflict(choice){
   if (pendingConflict) {
     if (choice === 'skip') {
       liveDay.doneMeta.set(pendingConflict.activity.id, { doneAt: Date.now(), skipped: true });
+      saveToStorage();
     }
     pendingConflict = null;
   }
@@ -858,6 +906,7 @@ function scheduleRealNotifications(){
   atRiskShownFor = new Set();
   pendingConflict = null;
   scheduleNotificationsFor(schedule, nowMs);
+  saveToStorage();
 }
 
 /// Rebuilds the live schedule from the current activities list without
@@ -872,6 +921,7 @@ function syncLiveSchedule(){
   const schedule = buildLiveSchedule(nowMs);
   liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta, manualStarts: liveDay.manualStarts, leaveTaps: liveDay.leaveTaps };
   scheduleNotificationsFor(schedule, nowMs);
+  saveToStorage();
 }
 
 /// Computes real end-of-day stats from what actually happened, not a
