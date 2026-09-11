@@ -360,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v32 · live day survives app reload / eviction';
+const APP_VERSION = 'v34 · CRITICAL FIX: crash on plain (non-installed) Safari tab';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -533,6 +533,10 @@ function clockTimeToMsToday(clock, referenceMs){
 /// tracking, since there's nothing real to anchor them to.
 let liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map(), leaveTaps: new Map() };
 let atRiskShownFor = new Set();
+// Tracks which "want to move this up?" nudges someone has already said
+// "not now" to, so it doesn't nag on every tick — cleared whenever a
+// fresh day starts, same lifetime as atRiskShownFor.
+let dismissedMoveUpFor = new Set();
 let pendingConflict = null; // set when marking done reveals we're already late for what's next
 
 function buildLiveSchedule(nowMs){
@@ -904,6 +908,7 @@ function scheduleRealNotifications(){
   const schedule = buildLiveSchedule(nowMs);
   liveDay = { startedAt: nowMs, schedule, doneMeta: new Map(), manualStarts: new Map(), leaveTaps: new Map() };
   atRiskShownFor = new Set();
+  dismissedMoveUpFor = new Set();
   pendingConflict = null;
   scheduleNotificationsFor(schedule, nowMs);
   saveToStorage();
@@ -922,6 +927,26 @@ function syncLiveSchedule(){
   liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta, manualStarts: liveDay.manualStarts, leaveTaps: liveDay.leaveTaps };
   scheduleNotificationsFor(schedule, nowMs);
   saveToStorage();
+}
+
+/// A real answer to "I finished early, why am I just sitting here for two
+/// hours?" — moves ONE activity's own scheduled time up to right now.
+/// Deliberately narrow: it only ever touches the activity someone actually
+/// tapped for, never the rest of the day, since other items later on
+/// might be a meeting someone else is also expecting at its original
+/// time — SIMA offers, the person decides, nothing shifts on its own.
+function moveActivityToNow(id){
+  const a = activities.find(x => x.id === id);
+  if (!a) return;
+  a.time = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  syncLiveSchedule();
+  render();
+}
+/// "Not now" for the move-up nudge — just stops asking about this one
+/// activity for the rest of the day, no schedule change at all.
+function dismissMoveUp(id){
+  dismissedMoveUpFor.add(id);
+  renderScreenOnly();
 }
 
 /// Computes real end-of-day stats from what actually happened, not a
@@ -978,7 +1003,13 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(e => console.warn('SW registration failed:', e));
   });
-  if (Notification && Notification.permission) notifStatus = Notification.permission;
+  // Safe check: `Notification` isn't a variable that exists on every
+  // browser — a plain (not-installed) Safari tab on iPhone doesn't have
+  // it at all. Referencing the bare name directly used to crash the
+  // entire app on load for exactly that case (worked when installed to
+  // the Home Screen, blank white screen in a normal Safari tab) — this
+  // is the safe way to check for a global that might not exist.
+  if (('Notification' in window) && Notification.permission) notifStatus = Notification.permission;
 }
 
 const TYPE_COLOR = { focus:'var(--focus)', meeting:'var(--meeting)', prepare:'var(--prepare)', personal:'var(--personal)' };
@@ -1031,6 +1062,7 @@ function restart(){
   voiceOpen = false;
   liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map(), leaveTaps: new Map() };
   atRiskShownFor = new Set();
+  dismissedMoveUpFor = new Set();
   pendingConflict = null;
   saveToStorage();
   render();
@@ -1635,6 +1667,12 @@ function screenNow1(){
         <div class="up-next-row"><div class="up-next-name">${item.activity.name}</div><div class="up-next-time">${item.activity.time}</div></div>
         ${item.activity.location ? `<div class="up-next-label" style="margin-top:4px;">${item.activity.location}</div>` : ''}
       </div>
+      ${(!hasLeft && (item.startMs - nowMs) > 45*60*1000 && !dismissedMoveUpFor.has(item.activity.id)) ? `
+      <div class="prep-now-card" style="margin-bottom:14px;">
+        <div class="prep-now-head"><b>Free until ${arriveTime}</b><span>Want to move "${item.activity.name}" up to right now instead?</span></div>
+        <button class="btn-outline" style="margin-top:10px;" onclick="moveActivityToNow('${item.activity.id}')">Move it up to now</button>
+        <button class="btn-outline" style="margin-top:8px;background:transparent;border-color:transparent;color:var(--ink-faint);" onclick="dismissMoveUp('${item.activity.id}')">Not now</button>
+      </div>` : ''}
       <div class="leave-in-card">
         <div>
           <div class="lab">${hasLeft ? 'ARRIVING IN' : (shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN'))}</div>
