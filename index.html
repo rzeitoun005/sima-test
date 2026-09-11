@@ -360,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v28 · mid-task notifications for every task, no minimum length';
+const APP_VERSION = 'v30 · every Prepare tap is a start signal, more notifications';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -486,7 +486,7 @@ function clockTimeToMsToday(clock, referenceMs){
 /// time) plus its Duration — this is what the Now screen reads from.
 /// Activities without a real, parseable time are excluded from live
 /// tracking, since there's nothing real to anchor them to.
-let liveDay = { startedAt: null, schedule: [], doneMeta: new Map() };
+let liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map() };
 let atRiskShownFor = new Set();
 let pendingConflict = null; // set when marking done reveals we're already late for what's next
 
@@ -524,10 +524,24 @@ function effectiveStartMs(item){
 /// moment the clock passes the end time. The person decides when they're
 /// done, not the clock — same rule the rest of the app follows.
 function liveDayCurrentItem(nowMs){
-  const started = liveDay.schedule.filter(it => effectiveStartMs(it) <= nowMs && !liveDay.doneMeta.has(it.activity.id));
+  const started = liveDay.schedule.filter(it =>
+    (effectiveStartMs(it) <= nowMs || liveDay.manualStarts.has(it.activity.id))
+    && !liveDay.doneMeta.has(it.activity.id)
+  );
   if (started.length === 0) return null;
   started.sort((a,b) => effectiveStartMs(a) - effectiveStartMs(b));
   return started[0];
+}
+/// An honest, OPTIONAL signal that someone has actually started — fired by
+/// whichever Prepare-page CTA they tap: "Start Activity" for a no-location
+/// item, or "Continue to Leave" (Navigate) for a travel-based one. Never a
+/// new button, never required: if nobody presses anything, the app keeps
+/// working exactly as before, silently assuming plan-equals-reality at the
+/// scheduled clock time. Pressing it just adds a real fact on top — and
+/// absence is never treated as evidence of the opposite, only as "unknown."
+function manualStartActivity(id){
+  liveDay.manualStarts.set(id, Date.now());
+  render();
 }
 function liveDayNextItem(nowMs){
   // Deliberately uses the item's REAL start time here, not effectiveStartMs
@@ -540,8 +554,13 @@ function liveDayNextItem(nowMs){
   return upcoming.length ? upcoming.sort((a,b)=>a.startMs-b.startMs)[0] : null;
 }
 /// Which stage a "current" item is in: still time to leave, or actually
-/// underway.
+/// underway. A manual start tap (Start Activity, or Continue to Leave for
+/// a travel-based item) is treated as a full, honest "this has begun"
+/// signal — it jumps straight to Doing even if the clock says otherwise,
+/// same idea as an early "Started N min early" status. No separate
+/// "in transit" stage: once someone's tapped the CTA, they're on it.
 function stageFor(item, nowMs){
+  if (liveDay.manualStarts.has(item.activity.id)) return 'doing';
   if (item.leaveByMs != null && nowMs < item.startMs) return 'leave';
   return 'doing';
 }
@@ -729,14 +748,43 @@ function scheduleNotificationsFor(schedule, nowMs){
         scheduledTimers.push(id);
         item.timers.push(id);
       }
+      // A genuinely long, quiet gap before this item's own heads-up gets
+      // one extra check-in at its midpoint — otherwise someone with a
+      // 2-hour-out next item hears nothing at all until the heads-up
+      // fires, which is exactly the kind of silence people notice.
+      if (prepDelay > 90*60*1000) {
+        const midGapDelay = prepDelay / 2;
+        const id = setTimeout(() => {
+          if (liveDay.doneMeta.has(item.activity.id)) return;
+          fireNotification(
+            `Still ahead of you today`,
+            `${item.activity.name} at ${item.activity.time} — you're all set for now.`
+          );
+        }, midGapDelay);
+        scheduledTimers.push(id);
+        item.timers.push(id);
+      }
     }
     const endDelay = item.endMs - nowMs;
     if (endDelay > 0) {
+      // Repeats every 8 min for up to an hour while it's still not marked
+      // done, instead of a single one-shot — someone who's genuinely
+      // behind needs more than one tap on the shoulder, and this stops
+      // itself the moment Mark Done is pressed.
       const next = schedule[i+1];
-      const id = setTimeout(() => fireNotification(
-        `Running behind: ${item.activity.name}`,
-        next ? `Still going? ${next.activity.name} is coming up.` : "This was your last item — mark it done when you wrap up."
-      ), endDelay);
+      const fireOverdueNudge = (repeatsLeft) => {
+        if (liveDay.doneMeta.has(item.activity.id)) return;
+        fireNotification(
+          `Running behind: ${item.activity.name}`,
+          next ? `Still going? ${next.activity.name} is coming up.` : "This was your last item — mark it done when you wrap up."
+        );
+        if (repeatsLeft > 0) {
+          const id = setTimeout(() => fireOverdueNudge(repeatsLeft - 1), 8*60*1000);
+          scheduledTimers.push(id);
+          item.timers.push(id);
+        }
+      };
+      const id = setTimeout(() => fireOverdueNudge(6), endDelay);
       scheduledTimers.push(id);
       item.timers.push(id);
     }
@@ -781,7 +829,7 @@ function scheduleRealNotifications(){
   clearScheduledNotifications();
   const nowMs = Date.now();
   const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map() };
+  liveDay = { startedAt: nowMs, schedule, doneMeta: new Map(), manualStarts: new Map() };
   atRiskShownFor = new Set();
   pendingConflict = null;
   scheduleNotificationsFor(schedule, nowMs);
@@ -797,7 +845,7 @@ function syncLiveSchedule(){
   clearScheduledNotifications();
   const nowMs = Date.now();
   const schedule = buildLiveSchedule(nowMs);
-  liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta };
+  liveDay = { startedAt: liveDay.startedAt, schedule, doneMeta: liveDay.doneMeta, manualStarts: liveDay.manualStarts };
   scheduleNotificationsFor(schedule, nowMs);
 }
 
@@ -906,7 +954,7 @@ function restart(){
   lastNavScreen = 'now1';
   captureSwatchIndex = 0;
   voiceOpen = false;
-  liveDay = { startedAt: null, schedule: [], doneMeta: new Map() };
+  liveDay = { startedAt: null, schedule: [], doneMeta: new Map(), manualStarts: new Map() };
   atRiskShownFor = new Set();
   pendingConflict = null;
   saveToStorage();
@@ -1524,8 +1572,8 @@ function screenNow1(){
           </div>`).join('')}
       </div>
       ${isLeave
-        ? `<a href="${mapsUrl}" target="_blank" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`
-        : `<button class="btn-primary" onclick="toast('Noted — see you at start time')">Got it →</button>`}
+        ? `<a href="${mapsUrl}" target="_blank" onclick="manualStartActivity('${item.activity.id}')" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`
+        : `<button class="btn-primary" onclick="manualStartActivity('${item.activity.id}')">Start Activity →</button>`}
     `;
   }
 
@@ -1538,6 +1586,15 @@ function screenNow1(){
     const countdown = countdownParts(remainingMs);
     const finishBy = new Date(item.endMs).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
     const typeLabel = { focus:'Focus time', meeting:'Meeting', personal:'Personal time', prepare:'Preparation' }[item.activity.type] || 'Activity';
+    // If someone used the optional "Start Activity" button, we have a real
+    // fact about when this genuinely began — worth being honest about
+    // rather than always claiming "On Track" the moment the clock hits
+    // the scheduled time regardless of what actually happened.
+    const manualStartMs = liveDay.manualStarts.get(item.activity.id);
+    const startDeltaMin = manualStartMs != null ? Math.round((manualStartMs - item.startMs) / 60000) : null;
+    let statusLabel = 'On Track', statusColor = 'var(--ontrack)';
+    if (startDeltaMin != null && startDeltaMin >= 1) { statusLabel = `Started ${startDeltaMin} min late`; statusColor = 'var(--tight)'; }
+    else if (startDeltaMin != null && startDeltaMin <= -1) { statusLabel = `Started ${Math.abs(startDeltaMin)} min early`; statusColor = 'var(--ontrack)'; }
     return `
       ${journeyPath()}
       <div class="now-pill">NOW</div>
@@ -1548,7 +1605,7 @@ function screenNow1(){
         </div>
         <div class="finish-row">
           <div><div class="lab">Finish by</div><div class="val">${finishBy}</div></div>
-          <div class="ontrack-chip"><div class="tick">${I.check}</div>On Track</div>
+          <div class="ontrack-chip" style="color:${statusColor};"><div class="tick" style="background:${statusColor};">${I.check}</div>${statusLabel}</div>
         </div>
       </div>
       ${next ? `
