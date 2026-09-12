@@ -360,7 +360,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v34 · CRITICAL FIX: crash on plain (non-installed) Safari tab';
+const APP_VERSION = 'v35 · honest "not started" screen for overdue no-location tasks';
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -589,9 +589,23 @@ function estimatedArrivalMs(item){
 function liveDayCurrentItem(nowMs){
   const started = liveDay.schedule.filter(it => {
     if (liveDay.doneMeta.has(it.activity.id)) return false;
+    // A manual start is always a real, explicit signal — it wins
+    // regardless of whether the item has a location.
+    if (liveDay.manualStarts.has(it.activity.id)) return true;
     const arrival = estimatedArrivalMs(it);
     if (arrival != null) return nowMs >= arrival;
-    return effectiveStartMs(it) <= nowMs || liveDay.manualStarts.has(it.activity.id);
+    // A location-based item that was never navigated to still falls back
+    // to the plan-equals-reality clock assumption (unchanged, deliberate —
+    // absence of a Navigate tap isn't treated as a lateness signal here).
+    if (it.leaveByMs != null) return effectiveStartMs(it) <= nowMs;
+    // A no-location item, though, only becomes "current" (and shows the
+    // live In Progress screen) once someone has actually tapped Start —
+    // the clock passing its scheduled time on its own is no longer
+    // enough. Otherwise it stays flagged as overdue-and-unconfirmed
+    // instead (see liveDayOverdueUnconfirmedItem / computeCurrentStage),
+    // so we never show a live countdown ring for something we don't
+    // actually know has started.
+    return false;
   });
   if (started.length === 0) return null;
   started.sort((a,b) => (estimatedArrivalMs(a) ?? effectiveStartMs(a)) - (estimatedArrivalMs(b) ?? effectiveStartMs(b)));
@@ -616,6 +630,22 @@ function manualLeaveActivity(id){
   liveDay.leaveTaps.set(id, Date.now());
   saveToStorage();
   render();
+}
+/// The earliest no-location item whose scheduled time has already passed,
+/// isn't done, and was never given a Start tap — genuinely overdue, but
+/// deliberately NOT promoted to "current"/"doing" on its own (see
+/// liveDayCurrentItem). This is what lets the Prepare screen honestly say
+/// "you haven't started this" instead of silently showing a live timer
+/// for something nobody confirmed actually began.
+function liveDayOverdueUnconfirmedItem(nowMs){
+  const candidates = liveDay.schedule.filter(it =>
+    !liveDay.doneMeta.has(it.activity.id) &&
+    !liveDay.manualStarts.has(it.activity.id) &&
+    it.leaveByMs == null &&
+    it.startMs <= nowMs
+  );
+  if (!candidates.length) return null;
+  return candidates.sort((a,b) => a.startMs - b.startMs)[0];
 }
 function liveDayNextItem(nowMs){
   // Deliberately uses the item's REAL start time here, not effectiveStartMs
@@ -669,6 +699,14 @@ function computeCurrentStage(nowMs){
     }
     return { type:'doing', item: current };
   }
+  // Before falling to "what's genuinely upcoming," check for a no-location
+  // item that's already overdue and never got a Start tap — that's more
+  // urgent than showing an unrelated later item as "next," and it needs
+  // its own honest treatment rather than either the ordinary Prepare
+  // countdown (which would misleadingly say "starts in: now" forever) or
+  // a live In Progress screen (which would claim something we don't know).
+  const overdue = liveDayOverdueUnconfirmedItem(nowMs);
+  if (overdue) return { type: 'starting', item: overdue, overdueUnconfirmed: true };
   const next = liveDayNextItem(nowMs);
   if (!next) return { type:'alldone' };
   // No separate "open/free time" state — Prepare is the permanent state
@@ -708,22 +746,27 @@ function recommendedPrepItems(activity){
 let prepChecks = {};
 function togglePrepCheck(id){ prepChecks[id] = !prepChecks[id]; renderScreenOnly(); }
 
-function liveDayMarkCurrentDone(){
+/// Shared by both "Mark done" paths: the normal one from the In Progress
+/// screen (targets whatever's currently live) and the fallback one from
+/// the "not started yet" screen (targets a specific item directly, since
+/// that item was deliberately never allowed to become "current" without
+/// an explicit Start tap). Keeping one real implementation means both
+/// paths always behave identically instead of slowly drifting apart.
+function markItemDone(item){
+  if (!item) { render(); return; }
   const nowMs = Date.now();
-  const current = liveDayCurrentItem(nowMs);
-  if (!current) { render(); return; }
-  const onTime = nowMs <= current.endMs;
-  liveDay.doneMeta.set(current.activity.id, { doneAt: nowMs, skipped: false });
-  current.timers.forEach(id => clearTimeout(id));
-  current.timers = [];
-  const earned = capitalFor(current.activity.priority, onTime);
+  const onTime = nowMs <= item.endMs;
+  liveDay.doneMeta.set(item.activity.id, { doneAt: nowMs, skipped: false });
+  item.timers.forEach(id => clearTimeout(id));
+  item.timers = [];
+  const earned = capitalFor(item.activity.priority, onTime);
   performanceCapital += earned;
   saveToStorage();
 
   // Real-time acknowledgment for the thing you just actually did — this
   // is what "alive" can still mean without a Lock Screen widget: instant
   // response to your real action, not another scheduled timer.
-  fireNotification(`Nice work — ${current.activity.name} done`, `+${earned} pts${onTime ? '' : ' (a bit late, still counts)'}`);
+  fireNotification(`Nice work — ${item.activity.name} done`, `+${earned} pts${onTime ? '' : ' (a bit late, still counts)'}`);
 
   // If that was the last real item left, send a genuine Day Complete
   // notification — useful specifically because you might not be looking
@@ -747,6 +790,16 @@ function liveDayMarkCurrentDone(){
   }
   render();
   announceEnteringPrepare();
+}
+function liveDayMarkCurrentDone(){
+  markItemDone(liveDayCurrentItem(Date.now()));
+}
+/// The fallback for a no-location task that's overdue and was never
+/// confirmed started: lets someone say "I already did this" and move on,
+/// without ever having to pass through a fake "in progress" screen for
+/// something we never actually saw them start.
+function markOverdueItemDone(id){
+  markItemDone(liveDay.schedule.find(it => it.activity.id === id));
 }
 
 /// Extends the current item's window when someone chooses "give it more
@@ -939,6 +992,11 @@ function moveActivityToNow(id){
   const a = activities.find(x => x.id === id);
   if (!a) return;
   a.time = new Date().toLocaleTimeString([], {hour:'numeric', minute:'2-digit'});
+  // Pressing this is itself a real, explicit "I'm doing this right now"
+  // signal — the same kind of fact a Start Activity tap records — so it
+  // should genuinely become current immediately, not require a second,
+  // redundant tap of Start Activity right after.
+  liveDay.manualStarts.set(id, Date.now());
   syncLiveSchedule();
   render();
 }
@@ -1633,6 +1691,12 @@ function screenNow1(){
     const item = stage.item;
     const isLeave = stage.type === 'leave';
     const hasLeft = isLeave && liveDay.leaveTaps.has(item.activity.id);
+    // True only for a no-location item that's past its scheduled time and
+    // was never given a Start tap. Deliberately kept out of the live In
+    // Progress screen (see liveDayCurrentItem) — this is the honest
+    // "we don't know if you've started" state instead of a fake timer.
+    const overdueUnconfirmed = !!stage.overdueUnconfirmed;
+    const lateMin = overdueUnconfirmed ? Math.max(1, Math.round((nowMs - item.startMs) / 60000)) : 0;
     const untilStart = item.startMs - nowMs;
     // For a travel-based activity, the thing that should count down is the
     // real leave deadline (leaveByMs) — not the task's own start time.
@@ -1660,8 +1724,8 @@ function screenNow1(){
     const mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(item.activity.location || item.activity.name);
     return `
       <div class="prepare-hero">
-        <h2>Almost there!</h2>
-        <p>Time to prepare for your next important commitment.</p>
+        <h2>${overdueUnconfirmed ? "Running late?" : "Almost there!"}</h2>
+        <p>${overdueUnconfirmed ? "This was supposed to start a bit ago — let us know where things stand." : "Time to prepare for your next important commitment."}</p>
       </div>
       <div class="up-next-card" style="margin-bottom:14px;">
         <div class="up-next-row"><div class="up-next-name">${item.activity.name}</div><div class="up-next-time">${item.activity.time}</div></div>
@@ -1675,13 +1739,13 @@ function screenNow1(){
       </div>` : ''}
       <div class="leave-in-card">
         <div>
-          <div class="lab">${hasLeft ? 'ARRIVING IN' : (shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN'))}</div>
-          <div class="big">${hasLeft ? arriveBigText : leaveBigText}</div>
-          <div class="sub">${hasLeft ? "You're on your way" : (isLeave ? `To arrive by ${arriveTime}` : "You're all set")}</div>
+          <div class="lab">${overdueUnconfirmed ? 'NOT STARTED' : (hasLeft ? 'ARRIVING IN' : (shouldLeaveNow ? 'LEAVE NOW' : (isLeave ? 'LEAVE IN' : 'STARTS IN')))}</div>
+          <div class="big" style="${overdueUnconfirmed ? 'color:var(--tight);' : ''}">${overdueUnconfirmed ? `${lateMin} min late` : (hasLeft ? arriveBigText : leaveBigText)}</div>
+          <div class="sub">${overdueUnconfirmed ? "Still waiting to hear you've started" : (hasLeft ? "You're on your way" : (isLeave ? `To arrive by ${arriveTime}` : "You're all set"))}</div>
         </div>
-        <div class="leave-ring" style="border-color:${hasLeft ? 'var(--accent)' : ((shouldLeaveNow||pct<25)?'var(--tight)':'var(--accent)')};">
-          ${isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>'}
-          <span>${hasLeft ? arriveBigText : leaveBigText}</span>
+        <div class="leave-ring" style="border-color:${overdueUnconfirmed ? 'var(--tight)' : (hasLeft ? 'var(--accent)' : ((shouldLeaveNow||pct<25)?'var(--tight)':'var(--accent)'))};">
+          ${overdueUnconfirmed ? '<i style="font-style:normal;">⚠</i>' : (isLeave ? '<i style="font-style:normal;">🚗</i>' : '<i style="font-style:normal;">⏱</i>')}
+          <span>${overdueUnconfirmed ? `${lateMin}m` : (hasLeft ? arriveBigText : leaveBigText)}</span>
         </div>
       </div>
       <div class="prep-now-card">
@@ -1696,7 +1760,8 @@ function screenNow1(){
         ? (hasLeft
             ? `<a href="${mapsUrl}" target="_blank" class="btn-outline" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Open Maps again →</a>`
             : `<a href="${mapsUrl}" target="_blank" onclick="manualLeaveActivity('${item.activity.id}')" class="btn-primary" style="display:block;text-align:center;text-decoration:none;box-sizing:border-box;">Continue to Leave →</a>`)
-        : `<button class="btn-primary" onclick="manualStartActivity('${item.activity.id}')">Start Activity →</button>`}
+        : `<button class="btn-primary" onclick="manualStartActivity('${item.activity.id}')">Start Activity →</button>
+           ${overdueUnconfirmed ? `<button class="btn-outline" style="margin-top:8px;" onclick="markOverdueItemDone('${item.activity.id}')">Actually, I already finished this — Mark done</button>` : ''}`}
     `;
   }
 
@@ -1718,19 +1783,14 @@ function screenNow1(){
     const manualStartMs = liveDay.manualStarts.get(item.activity.id);
     const actualStartMs = manualStartMs != null ? manualStartMs : estimatedArrivalMs(item);
     const startDeltaMin = actualStartMs != null ? Math.round((actualStartMs - item.startMs) / 60000) : null;
+    // Note: a no-location item can no longer reach this "doing" screen at
+    // all without a real Start tap (see liveDayCurrentItem /
+    // liveDayOverdueUnconfirmedItem) — an unconfirmed, overdue task now
+    // stays on its own honest Prepare-style screen instead of showing up
+    // here, so there's no "not started" case left to handle in this block.
     let statusLabel = 'On Track', statusColor = 'var(--ontrack)';
     if (startDeltaMin != null && startDeltaMin >= 1) { statusLabel = `Started ${startDeltaMin} min late`; statusColor = 'var(--tight)'; }
     else if (startDeltaMin != null && startDeltaMin <= -1) { statusLabel = `Started ${Math.abs(startDeltaMin)} min early`; statusColor = 'var(--ontrack)'; }
-    else if (actualStartMs == null && !item.activity.location && nowMs > item.startMs) {
-      // For a no-location task specifically: nobody tapped Start Activity,
-      // and the scheduled time has already passed. Unlike a travel-based
-      // item, there's no other real-world signal to fall back on here —
-      // so, per how this is meant to work, silence past the scheduled
-      // time itself counts as "not actually started," not as "on track."
-      const lateMin = Math.max(1, Math.round((nowMs - item.startMs) / 60000));
-      statusLabel = `Not started — ${lateMin} min late`;
-      statusColor = 'var(--tight)';
-    }
     return `
       ${journeyPath()}
       <div class="now-pill">NOW</div>
@@ -2072,6 +2132,10 @@ function renderMiniStatusBar(){
         const c = countdownParts(untilLeaveMs);
         countdownText = c.big + (c.small.includes('sec') ? 's' : 'm');
       }
+    } else if (stage.type === 'starting' && stage.overdueUnconfirmed) {
+      pillClass = 'tight'; pillLabel = 'NOT STARTED';
+      const lateMin = Math.max(1, Math.round((nowMs - item.startMs) / 60000));
+      countdownText = lateMin + 'm late';
     } else if (stage.type === 'starting') {
       pillClass = 'starting'; pillLabel = 'STARTING SOON';
       const c = countdownParts(Math.max(0, item.startMs - nowMs));
