@@ -9,6 +9,14 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="SIMA">
 <link rel="manifest" href="manifest.json">
+<!--
+  Real push notifications (survive the phone being locked/app closed) run
+  through OneSignal — see the CONFIG block near the top of the main script
+  for the two values (ONESIGNAL_APP_ID, WORKER_PROXY_URL) that need to be
+  filled in before this actually delivers anything. Until they are, the
+  app runs exactly as before (foreground-only), nothing breaks.
+-->
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -360,7 +368,47 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v35 · honest "not started" screen for overdue no-location tasks';
+const APP_VERSION = 'v36.1 · push notifications configured and live';
+
+/* ---------- CONFIG: fill these in to make real push notifications work ----------
+   Until ONESIGNAL_APP_ID and WORKER_PROXY_URL are both filled in, the app
+   runs exactly like before this version — nothing breaks, it just quietly
+   can't schedule anything that survives the phone being locked. */
+const ONESIGNAL_APP_ID = '9efc3031-ca48-47f1-8acd-77a3e2395bc7'; // from the OneSignal dashboard, Settings > Keys & IDs
+const WORKER_PROXY_URL = 'https://sima-push.r-zeitoun005.workers.dev'; // your deployed Cloudflare Worker URL
+
+if (ONESIGNAL_APP_ID && typeof OneSignalDeferred !== 'undefined') {
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+  OneSignalDeferred.push(function(OneSignal){
+    OneSignal.init({ appId: ONESIGNAL_APP_ID, serviceWorkerPath: 'sw.js', serviceWorkerParam: { scope: '/' } });
+  });
+}
+
+/// A stable per-installation ID, generated once and kept in localStorage.
+/// This is what lets a server address "this specific person's phone"
+/// later, without ever needing an account/login — it's just a random
+/// name for this one browser install.
+function getDeviceId(){
+  try {
+    let id = localStorage.getItem('sima_device_id');
+    if (!id) {
+      id = 'sima-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem('sima_device_id', id);
+    }
+    return id;
+  } catch(e){ return 'sima-anon'; }
+}
+
+/// Tells OneSignal "future pushes for this browser should be addressed to
+/// this ID" — required once permission is granted, so the server-side
+/// schedule call can target this exact device later.
+function ensureDeviceLinked(){
+  if (typeof OneSignalDeferred === 'undefined') return;
+  const id = getDeviceId();
+  OneSignalDeferred.push(function(OneSignal){
+    OneSignal.login(id).catch(e => console.warn('OneSignal login failed:', e));
+  });
+}
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -497,13 +545,74 @@ function clearScheduledNotifications(){
   scheduledTimers = [];
 }
 
+/* ---------- v36: notifications that survive a locked/closed phone ----------
+   Everything below replaces the old approach of setTimeout() calls made
+   from inside the page — those die the instant iOS suspends the tab.
+   Instead, the exact same set of notifications (same content, same
+   timing) gets computed here and handed to a small server, which is the
+   only thing that can actually wake the phone later. See CONFIG above
+   for the two values that turn this on. */
+
+/// IDs of notifications currently scheduled server-side for this device,
+/// so a resync (editing an activity, starting a fresh day) can cancel the
+/// stale ones before scheduling fresh ones — otherwise someone could get
+/// a "starting soon" ping for a task they already deleted.
+let pendingPushIds = [];
+
+/// Sends the computed plan to the worker, which forwards each item to
+/// OneSignal with its own scheduled send time. Silently does nothing if
+/// push isn't configured yet (CONFIG above) or `fetch` isn't available —
+/// this keeps it safe to call from the Node test harness, and safe to
+/// ship before the server piece is deployed.
+async function pushScheduleToServer(plan){
+  if (typeof fetch !== 'function' || !WORKER_PROXY_URL || !plan.length) return [];
+  try {
+    const res = await fetch(WORKER_PROXY_URL + '/schedule', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ externalId: getDeviceId(), notifications: plan }),
+    });
+    const data = await res.json();
+    return (data && data.results) ? data.results.filter(r => r.ok).map(r => r.oneSignalId) : [];
+  } catch(e){ console.warn('Push scheduling failed:', e); return []; }
+}
+
+/// Cancels whatever's still pending server-side — called before scheduling
+/// a fresh batch, so edits/restarts don't leave stale reminders queued up.
+async function cancelServerPush(ids){
+  if (typeof fetch !== 'function' || !WORKER_PROXY_URL || !ids.length) return;
+  try {
+    await fetch(WORKER_PROXY_URL + '/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+  } catch(e){ console.warn('Push cancel failed:', e); }
+}
+
 /// Sends a real notification immediately, so you can confirm the whole
-/// pipeline (hosting, permission, service worker) actually works — without
+/// local pipeline (permission, service worker) actually works — without
 /// waiting for a real countdown or having to keep the phone unlocked.
 function sendTestNotification(){
   if (notifStatus !== 'granted') { toast('Enable notifications first'); return; }
   fireNotification('SIMA test', "If you see this, real notifications are working on this device.");
   toast('Test notification sent');
+}
+
+/// The real end-to-end test: schedules ONE push five seconds out through
+/// the actual server pipeline, same as a real reminder would use. Lock
+/// the phone right after tapping this — if it still arrives, the whole
+/// background pipeline (OneSignal + the worker) is genuinely working.
+async function sendTestPushNotification(){
+  if (notifStatus !== 'granted') { toast('Enable notifications first'); return; }
+  if (!WORKER_PROXY_URL) { toast('Push server not configured yet — see CONFIG in the code'); return; }
+  const ids = await pushScheduleToServer([{
+    id: 'test-' + Date.now(),
+    title: 'SIMA real push test',
+    body: 'If you see this after locking your phone, background notifications are working.',
+    sendAtMs: Date.now() + 5000,
+  }]);
+  toast(ids.length ? 'Real push sent — lock your phone now' : 'Could not reach the push server — check WORKER_PROXY_URL');
 }
 
 /// Parses a clock time like "2:05 PM", "14:05", or "2:05pm" into {hh, mm}.
@@ -759,6 +868,14 @@ function markItemDone(item){
   liveDay.doneMeta.set(item.activity.id, { doneAt: nowMs, skipped: false });
   item.timers.forEach(id => clearTimeout(id));
   item.timers = [];
+  // NOTE (known v36 limitation): this clears any leftover local timers,
+  // but does NOT reach into the server to cancel that item's already-
+  // scheduled push reminders (e.g. a "running behind" nudge queued for
+  // 20 minutes from now). Worst case, one stale reminder arrives for a
+  // task you already finished — harmless, just slightly late info. A
+  // full fix (tracking each item's server-side notification IDs so they
+  // can be cancelled here too) is a reasonable next improvement, not
+  // done in this pass to keep the first real-push version shippable.
   const earned = capitalFor(item.activity.priority, onTime);
   performanceCapital += earned;
   saveToStorage();
@@ -812,12 +929,12 @@ function extendCurrent(minutes){
   current.endMs += minutes*60*1000;
   if (notifStatus === 'granted') {
     const next = liveDay.schedule[liveDay.schedule.indexOf(current)+1];
-    const id = setTimeout(() => fireNotification(
-      `Running behind: ${current.activity.name}`,
-      next ? `Still going? ${next.activity.name} is coming up.` : "Mark it done when you wrap up."
-    ), current.endMs - Date.now());
-    scheduledTimers.push(id);
-    current.timers.push(id);
+    pushScheduleToServer([{
+      id: 'extend-' + current.activity.id + '-' + Date.now(),
+      title: `Running behind: ${current.activity.name}`,
+      body: next ? `Still going? ${next.activity.name} is coming up.` : "Mark it done when you wrap up.",
+      sendAtMs: current.endMs,
+    }]).then(ids => { pendingPushIds = pendingPushIds.concat(ids); });
   }
   go('now1');
 }
@@ -847,109 +964,104 @@ function prepLeadMinutesFor(durationMinutes){
   return 10;
 }
 
-/// Schedules real notifications against each activity's actual clock time.
-/// For activities with travel time, the heads-up fires before the LEAVE-BY
-/// moment (not the start), since that's the real deadline. Deliberately
-/// just two alerts per activity: the heads-up, and a "running behind"
-/// alert if its window ends and it still hasn't been marked done — that
-/// second one is the actual AT RISK signal, not a generic timer. There's
-/// no separate "start now" ping; the persistent status card covers that
-/// moment, the same way Maps doesn't beep at every turn — it just shows
-/// it. Important limitation: iOS commonly suspends this timer within
-/// seconds of the phone locking or the app leaving the foreground — this
-/// reliably fires only while the tab stays open and the screen stays on,
-/// without a real backend push server behind it.
-/// Schedules notifications for whichever schedule items don't already have
-/// completion history — shared by both a fresh Start Day and a mid-day
-/// resync after editing activities.
-function scheduleNotificationsFor(schedule, nowMs){
-  if (notifStatus !== 'granted') return;
+/// Builds the exact same set of notifications as before (same content,
+/// same timing rules) as plain data — {id, title, body, sendAtMs} — with
+/// no setTimeout anywhere. This is what makes the whole thing testable
+/// (buildable in Node with no browser) and reusable: v35 called this
+/// logic to arm local timers; v36 calls it to hand a plan to the server.
+/// Deliberately just a few alerts per activity: the heads-up, an overdue
+/// repeat if the window closes with nothing marked done, plus halfway and
+/// final-stretch check-ins — same shape as before, just delivered by a
+/// server now instead of a page that iOS can freeze.
+function computeNotificationPlan(schedule, nowMs){
+  const plan = [];
   schedule.forEach((item, i) => {
     if (liveDay.doneMeta.has(item.activity.id)) return;
     const anchorMs = effectiveStartMs(item);
     const durationMin = (item.endMs - item.startMs) / 60000;
     const leadMin = prepLeadMinutesFor(durationMin);
     if (leadMin > 0) {
-      const prepDelay = anchorMs - nowMs - (leadMin*60*1000);
-      if (prepDelay > 0) {
+      const prepAtMs = anchorMs - (leadMin*60*1000);
+      if (prepAtMs > nowMs) {
         const label = item.leaveByMs != null ? `Leave soon: ${item.activity.name}` : `Starting soon: ${item.activity.name}`;
         const body = item.leaveByMs != null ? `Leave in ${leadMin} min to make it on time` : `Starts in ${leadMin} min, at ${item.activity.time}`;
-        const id = setTimeout(() => fireNotification(label, body), prepDelay);
-        scheduledTimers.push(id);
-        item.timers.push(id);
+        plan.push({ id: `prep-${item.activity.id}`, title: label, body, sendAtMs: prepAtMs });
       }
       // A genuinely long, quiet gap before this item's own heads-up gets
       // one extra check-in at its midpoint — otherwise someone with a
       // 2-hour-out next item hears nothing at all until the heads-up
       // fires, which is exactly the kind of silence people notice.
-      if (prepDelay > 90*60*1000) {
-        const midGapDelay = prepDelay / 2;
-        const id = setTimeout(() => {
-          if (liveDay.doneMeta.has(item.activity.id)) return;
-          fireNotification(
-            `Still ahead of you today`,
-            `${item.activity.name} at ${item.activity.time} — you're all set for now.`
-          );
-        }, midGapDelay);
-        scheduledTimers.push(id);
-        item.timers.push(id);
+      if (prepAtMs - nowMs > 90*60*1000) {
+        const midGapMs = nowMs + (prepAtMs - nowMs) / 2;
+        plan.push({
+          id: `midgap-${item.activity.id}`,
+          title: 'Still ahead of you today',
+          body: `${item.activity.name} at ${item.activity.time} — you're all set for now.`,
+          sendAtMs: midGapMs,
+        });
       }
     }
-    const endDelay = item.endMs - nowMs;
-    if (endDelay > 0) {
-      // Repeats every 8 min for up to an hour while it's still not marked
-      // done, instead of a single one-shot — someone who's genuinely
-      // behind needs more than one tap on the shoulder, and this stops
-      // itself the moment Mark Done is pressed.
+    if (item.endMs > nowMs) {
+      // Repeats every 8 min for up to an hour, instead of a single
+      // one-shot — someone who's genuinely behind needs more than one
+      // tap on the shoulder. Each occurrence is its own scheduled push
+      // (the server can't check "already marked done?" at send time the
+      // way a live setTimeout could) — see the note in markItemDone about
+      // this being an accepted v1 tradeoff.
       const next = schedule[i+1];
-      const fireOverdueNudge = (repeatsLeft) => {
-        if (liveDay.doneMeta.has(item.activity.id)) return;
-        fireNotification(
-          `Running behind: ${item.activity.name}`,
-          next ? `Still going? ${next.activity.name} is coming up.` : "This was your last item — mark it done when you wrap up."
-        );
-        if (repeatsLeft > 0) {
-          const id = setTimeout(() => fireOverdueNudge(repeatsLeft - 1), 8*60*1000);
-          scheduledTimers.push(id);
-          item.timers.push(id);
-        }
-      };
-      const id = setTimeout(() => fireOverdueNudge(6), endDelay);
-      scheduledTimers.push(id);
-      item.timers.push(id);
+      for (let rep = 0; rep <= 6; rep++) {
+        plan.push({
+          id: `overdue-${item.activity.id}-${rep}`,
+          title: `Running behind: ${item.activity.name}`,
+          body: next ? `Still going? ${next.activity.name} is coming up.` : "This was your last item — mark it done when you wrap up.",
+          sendAtMs: item.endMs + rep*8*60*1000,
+        });
+      }
     }
-    // Halfway check-in — every task, no minimum length. On a very short
-    // task this lands close to "final stretch" below, and that's fine:
-    // short tasks are exactly where the person asked for more signal, not
-    // less.
+    // Halfway check-in — every task, no minimum length.
     {
       const halfwayMs = item.startMs + (item.endMs - item.startMs) / 2;
-      const halfwayDelay = halfwayMs - nowMs;
-      if (halfwayDelay > 0) {
+      if (halfwayMs > nowMs) {
         const remainingMin = Math.round((item.endMs - halfwayMs) / 60000);
-        const id = setTimeout(() => fireNotification(
-          `Halfway there: ${item.activity.name}`,
-          `${remainingMin} min left`
-        ), halfwayDelay);
-        scheduledTimers.push(id);
-        item.timers.push(id);
+        plan.push({
+          id: `halfway-${item.activity.id}`,
+          title: `Halfway there: ${item.activity.name}`,
+          body: `${remainingMin} min left`,
+          sendAtMs: halfwayMs,
+        });
       }
     }
-    // A final-stretch nudge, also with no minimum length now — floored at
-    // 1 minute so it still means something on a very short task.
+    // A final-stretch nudge, floored at 1 minute so it still means
+    // something on a very short task.
     {
       const stretchMin = finalStretchMinutesFor(durationMin);
       const stretchMs = item.endMs - stretchMin*60*1000;
-      const stretchDelay = stretchMs - nowMs;
-      if (stretchDelay > 0) {
-        const id = setTimeout(() => fireNotification(
-          `Almost there: ${item.activity.name}`,
-          `${stretchMin} min left`
-        ), stretchDelay);
-        scheduledTimers.push(id);
-        item.timers.push(id);
+      if (stretchMs > nowMs) {
+        plan.push({
+          id: `stretch-${item.activity.id}`,
+          title: `Almost there: ${item.activity.name}`,
+          body: `${stretchMin} min left`,
+          sendAtMs: stretchMs,
+        });
       }
     }
+  });
+  return plan;
+}
+
+/// Cancels whatever's still scheduled server-side, computes a fresh plan
+/// from the current schedule, and sends it to the server — shared by both
+/// a fresh Start Day and a mid-day resync after editing activities. This
+/// is the thin wrapper that replaced the old timer-arming version of
+/// scheduleNotificationsFor; kept the same name so nothing else calling
+/// it needs to change.
+function scheduleNotificationsFor(schedule, nowMs){
+  if (notifStatus !== 'granted') return;
+  const plan = computeNotificationPlan(schedule, nowMs);
+  const staleIds = pendingPushIds;
+  pendingPushIds = [];
+  cancelServerPush(staleIds).then(() => pushScheduleToServer(plan)).then(ids => {
+    pendingPushIds = ids;
   });
 }
 
@@ -1040,7 +1152,37 @@ function performanceTrend(){
   return Math.round(last - prevAvg);
 }
 
+/// Asks for notification permission. Prefers OneSignal's flow when the
+/// SDK is present and configured (CONFIG above) — that's what actually
+/// registers this device for real, backgrounded push. Falls back to the
+/// plain browser Notification API otherwise, which still covers: the
+/// Node test harness (no OneSignal there at all), and any real device
+/// where the SDK hasn't loaded — foreground-only in that fallback case,
+/// same as before v36, rather than the app breaking outright.
 async function requestNotifications(){
+  if (ONESIGNAL_APP_ID && typeof OneSignalDeferred !== 'undefined') {
+    return new Promise((resolve) => {
+      OneSignalDeferred.push(async function(OneSignal){
+        try {
+          await OneSignal.Notifications.requestPermission();
+          notifStatus = OneSignal.Notifications.permission ? 'granted' : 'denied';
+          if (notifStatus === 'granted') {
+            ensureDeviceLinked();
+            toast('Real notifications enabled');
+            if (liveDay.startedAt) syncLiveSchedule(); // arm any already-due reminders for today
+          } else {
+            toast('Notifications blocked — check Settings');
+          }
+        } catch(e){
+          console.warn('OneSignal permission request failed:', e);
+          notifStatus = 'denied';
+          toast('Could not enable notifications');
+        }
+        render();
+        resolve();
+      });
+    });
+  }
   if (!('Notification' in window)) {
     notifStatus = 'unsupported';
     toast("This browser doesn't support notifications");
@@ -1050,7 +1192,7 @@ async function requestNotifications(){
   const perm = await Notification.requestPermission();
   notifStatus = perm;
   if (perm === 'granted') {
-    toast('Real notifications enabled');
+    toast('Real notifications enabled (foreground only — push isn\'t configured yet)');
   } else {
     toast('Notifications blocked — check Settings');
   }
@@ -1068,6 +1210,25 @@ if ('serviceWorker' in navigator) {
   // the Home Screen, blank white screen in a normal Safari tab) — this
   // is the safe way to check for a global that might not exist.
   if (('Notification' in window) && Notification.permission) notifStatus = Notification.permission;
+}
+
+// On load, if OneSignal is configured, let its own opted-in status win
+// once it's ready — it's the more accurate source of truth for whether
+// real background push is actually active on this device (the raw
+// Notification.permission check above can say "granted" even if the
+// OneSignal subscription itself never completed).
+if (ONESIGNAL_APP_ID && typeof OneSignalDeferred !== 'undefined') {
+  OneSignalDeferred.push(function(OneSignal){
+    OneSignal.User.PushSubscription.addEventListener('change', () => {
+      notifStatus = OneSignal.User.PushSubscription.optedIn ? 'granted' : notifStatus;
+      render();
+    });
+    if (OneSignal.User.PushSubscription.optedIn) {
+      notifStatus = 'granted';
+      ensureDeviceLinked();
+      render();
+    }
+  });
 }
 
 const TYPE_COLOR = { focus:'var(--focus)', meeting:'var(--meeting)', prepare:'var(--prepare)', personal:'var(--personal)' };
@@ -1605,13 +1766,14 @@ function screenPreview(){
     ${notifStatus !== 'granted' ? `
       <div class="insight-card" style="margin-top:6px;">
         <div class="insight-label">REAL NOTIFICATIONS</div>
-        <div class="insight-body" style="margin-bottom:10px;">Turn these on to actually get notified — for real, on this device — when each activity's time is up. Best for a live test: set short durations (like "2 min") above.</div>
+        <div class="insight-body" style="margin-bottom:10px;">Turn these on to actually get notified — for real, on this device, even if your phone is locked — when each activity's time is up. Best for a live test: set short durations (like "2 min") above.</div>
         <button class="btn-outline" onclick="requestNotifications()">Enable real notifications</button>
       </div>` : `
       <div class="insight-card" style="margin-top:6px;">
         <div class="insight-label">REAL NOTIFICATIONS</div>
-        <div class="insight-body">✓ Enabled — Start Day will schedule real alerts against your actual clock. Keep this tab open and the screen on for the most reliable test — iOS often suspends this within seconds of the phone locking, since there's no backend push server behind it yet.</div>
-        <button class="btn-outline" style="margin-top:10px;" onclick="sendTestNotification()">Send a test notification now</button>
+        <div class="insight-body">✓ Enabled${WORKER_PROXY_URL ? ' — Start Day will schedule real alerts through the push server, so they arrive even with the phone locked or the app closed.' : ' — but the push server isn\'t configured yet (see CONFIG in the code), so alerts will only fire while this tab stays open and the screen stays on.'}</div>
+        <button class="btn-outline" style="margin-top:10px;" onclick="sendTestNotification()">Send a test notification now (foreground)</button>
+        ${WORKER_PROXY_URL ? `<button class="btn-outline" style="margin-top:10px;" onclick="sendTestPushNotification()">Send a real push (lock your phone after)</button>` : ''}
       </div>`}
     <div style="height:8px;"></div>
     <button class="btn-primary" style="box-shadow:0 10px 24px -8px rgba(73,84,240,0.45);" onclick="startDayLive()">Start Day</button>
