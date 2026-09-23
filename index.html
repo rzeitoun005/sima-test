@@ -368,7 +368,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v36.1 · push notifications configured and live';
+const APP_VERSION = 'v36.2 · fixed OneSignal load-order bug (real subscriptions now register)';
 
 /* ---------- CONFIG: fill these in to make real push notifications work ----------
    Until ONESIGNAL_APP_ID and WORKER_PROXY_URL are both filled in, the app
@@ -377,8 +377,18 @@ const APP_VERSION = 'v36.1 · push notifications configured and live';
 const ONESIGNAL_APP_ID = '9efc3031-ca48-47f1-8acd-77a3e2395bc7'; // from the OneSignal dashboard, Settings > Keys & IDs
 const WORKER_PROXY_URL = 'https://sima-push.r-zeitoun005.workers.dev'; // your deployed Cloudflare Worker URL
 
-if (ONESIGNAL_APP_ID && typeof OneSignalDeferred !== 'undefined') {
-  window.OneSignalDeferred = window.OneSignalDeferred || [];
+// IMPORTANT: the OneSignal SDK script tag in <head> uses `defer`, so it
+// can finish loading well AFTER this inline script has already run —
+// checking `typeof OneSignalDeferred !== 'undefined'` right now would
+// almost always be false on a real phone, silently skipping OneSignal
+// entirely (this was a real bug in the first version of this code: it
+// looked like notifications got enabled, but no real subscription was
+// ever created). The fix: create the queue ourselves, unconditionally,
+// this early — OneSignal's own script is written to look for exactly
+// this array once IT finishes loading and run whatever's queued in it,
+// regardless of which one loaded first.
+window.OneSignalDeferred = window.OneSignalDeferred || [];
+if (ONESIGNAL_APP_ID) {
   OneSignalDeferred.push(function(OneSignal){
     OneSignal.init({ appId: ONESIGNAL_APP_ID, serviceWorkerPath: 'sw.js', serviceWorkerParam: { scope: '/' } });
   });
@@ -403,12 +413,13 @@ function getDeviceId(){
 /// this ID" — required once permission is granted, so the server-side
 /// schedule call can target this exact device later.
 function ensureDeviceLinked(){
-  if (typeof OneSignalDeferred === 'undefined') return;
+  if (!ONESIGNAL_APP_ID) return;
   const id = getDeviceId();
   OneSignalDeferred.push(function(OneSignal){
     OneSignal.login(id).catch(e => console.warn('OneSignal login failed:', e));
   });
 }
+
 
 const STEPS = ['plan','structure','preview','now1','atrisk','conflict','complete'];
 const PHASE = { plan:'PLAN', structure:'PLAN', preview:'PLAN', addActivity:'PLAN', chooseTravelMode:'PLAN',
@@ -1152,37 +1163,17 @@ function performanceTrend(){
   return Math.round(last - prevAvg);
 }
 
-/// Asks for notification permission. Prefers OneSignal's flow when the
-/// SDK is present and configured (CONFIG above) — that's what actually
-/// registers this device for real, backgrounded push. Falls back to the
-/// plain browser Notification API otherwise, which still covers: the
-/// Node test harness (no OneSignal there at all), and any real device
-/// where the SDK hasn't loaded — foreground-only in that fallback case,
-/// same as before v36, rather than the app breaking outright.
+/// Asks for notification permission. Does the real, immediate browser
+/// permission request first — this is what actually shows the OS prompt,
+/// works the same regardless of whether OneSignal's SDK has finished
+/// loading yet, and is exactly what the automated tests exercise (no
+/// OneSignal present there at all). Once permission is settled, it
+/// separately queues OneSignal's own subscription step — queued, not
+/// awaited, so it completes whenever the SDK is ready without this
+/// function ever hanging on it. Permission was already decided above, so
+/// this never shows a second prompt to the person; it just finishes
+/// registering this device for real background push.
 async function requestNotifications(){
-  if (ONESIGNAL_APP_ID && typeof OneSignalDeferred !== 'undefined') {
-    return new Promise((resolve) => {
-      OneSignalDeferred.push(async function(OneSignal){
-        try {
-          await OneSignal.Notifications.requestPermission();
-          notifStatus = OneSignal.Notifications.permission ? 'granted' : 'denied';
-          if (notifStatus === 'granted') {
-            ensureDeviceLinked();
-            toast('Real notifications enabled');
-            if (liveDay.startedAt) syncLiveSchedule(); // arm any already-due reminders for today
-          } else {
-            toast('Notifications blocked — check Settings');
-          }
-        } catch(e){
-          console.warn('OneSignal permission request failed:', e);
-          notifStatus = 'denied';
-          toast('Could not enable notifications');
-        }
-        render();
-        resolve();
-      });
-    });
-  }
   if (!('Notification' in window)) {
     notifStatus = 'unsupported';
     toast("This browser doesn't support notifications");
@@ -1191,12 +1182,23 @@ async function requestNotifications(){
   }
   const perm = await Notification.requestPermission();
   notifStatus = perm;
-  if (perm === 'granted') {
-    toast('Real notifications enabled (foreground only — push isn\'t configured yet)');
-  } else {
+  if (perm !== 'granted') {
     toast('Notifications blocked — check Settings');
+    render();
+    return;
   }
+  toast('Real notifications enabled');
   render();
+
+  if (ONESIGNAL_APP_ID) {
+    OneSignalDeferred.push(async function(OneSignal){
+      try {
+        await OneSignal.Notifications.requestPermission();
+        ensureDeviceLinked();
+        if (liveDay.startedAt) syncLiveSchedule(); // arm any already-due reminders for today
+      } catch(e){ console.warn('OneSignal subscription failed:', e); }
+    });
+  }
 }
 
 if ('serviceWorker' in navigator) {
@@ -1217,7 +1219,7 @@ if ('serviceWorker' in navigator) {
 // real background push is actually active on this device (the raw
 // Notification.permission check above can say "granted" even if the
 // OneSignal subscription itself never completed).
-if (ONESIGNAL_APP_ID && typeof OneSignalDeferred !== 'undefined') {
+if (ONESIGNAL_APP_ID) {
   OneSignalDeferred.push(function(OneSignal){
     OneSignal.User.PushSubscription.addEventListener('change', () => {
       notifStatus = OneSignal.User.PushSubscription.optedIn ? 'granted' : notifStatus;
