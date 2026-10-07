@@ -368,7 +368,7 @@
 // Bumped every time a real update ships — check this on the Plan screen
 // against what I tell you in chat to confirm you're on the current version
 // before troubleshooting anything else.
-const APP_VERSION = 'v36.2 · fixed OneSignal load-order bug (real subscriptions now register)';
+const APP_VERSION = 'v36.3 · fixed OneSignal service worker path';
 
 /* ---------- CONFIG: fill these in to make real push notifications work ----------
    Until ONESIGNAL_APP_ID and WORKER_PROXY_URL are both filled in, the app
@@ -390,7 +390,7 @@ const WORKER_PROXY_URL = 'https://sima-push.r-zeitoun005.workers.dev'; // your d
 window.OneSignalDeferred = window.OneSignalDeferred || [];
 if (ONESIGNAL_APP_ID) {
   OneSignalDeferred.push(function(OneSignal){
-    OneSignal.init({ appId: ONESIGNAL_APP_ID, serviceWorkerPath: 'sw.js', serviceWorkerParam: { scope: '/' } });
+    OneSignal.init({ appId: ONESIGNAL_APP_ID, serviceWorkerPath: '/sima-test/sw.js', serviceWorkerParam: { scope: '/sima-test/' } });
   });
 }
 
@@ -2360,3 +2360,4 @@ render();
 </script>
 </body>
 </html>
+
